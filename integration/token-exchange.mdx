@@ -1,18 +1,19 @@
 ---
 title: Token exchange
-description: Use OAuth 2.0 Token Exchange (RFC 8693) to complete device authorization or obtain a remote signer session token.
+description: Use OAuth 2.0 Token Exchange (RFC 8693) to complete device authorization, obtain a remote signer session, or mint a user signer token via the clearinghouse.
 ---
 
-PymtHouse implements the **OAuth 2.0 Token Exchange** grant (RFC 8693) for two distinct server-side operations:
+PymtHouse implements the **OAuth 2.0 Token Exchange** grant (RFC 8693) for three server-side operations:
 
-1. **Device completion** — a backend binds a pending RFC 8628 device grant to an authenticated user, completing the CLI authentication flow on behalf of the user without a second browser redirect.
+1. **Device completion** — a backend binds a pending RFC 8628 device grant to an authenticated user, completing the CLI authentication flow without a second browser redirect.
 2. **Remote signer session exchange** — a short-lived access token is exchanged for a long-lived opaque remote signer session token (`pmth_*`) scoped to `sign:job`.
+3. **Clearinghouse signer mint (Option A)** — M2M client credentials with `sign:mint_user_token` scope mints a user-scoped signer JWT and allowance data in a single call without a prior Builder API user-token step.
 
-Both operations use the same token endpoint (`POST {issuer}/token`) and the same `grant_type`, but with different `resource` values.
+Operations 1 and 2 use the same token endpoint (`POST {issuer}/token`) and the same `grant_type`, but with different `resource` values. Operation 3 uses `client_credentials` grant type.
 
-## Common parameters
+## Common parameters (operations 1 & 2)
 
-All token exchange requests follow the RFC 8693 parameter structure:
+All RFC 8693 token exchange requests:
 
 | Parameter | Value |
 | --- | --- |
@@ -80,7 +81,7 @@ The `subject_token` must be:
 - Issued to the **public** `app_…` client for the same app (`client_id` or `azp` claim = public client id).
 - Not expired.
 
-The M2M client's `allowed_scopes` must include `device:approve` or `users:token`. The subject token itself needs no additional special scope for device completion.
+The M2M client's `allowed_scopes` must include `device:approve` or `users:token`.
 
 ### Response
 
@@ -95,9 +96,15 @@ The M2M client's `allowed_scopes` must include `device:approve` or `users:token`
 
 The binding of the device grant is a **side-effect** of this call. The CLI's next poll of the device code token endpoint will return the bound session.
 
-### Mapping subject token → end user
+SDK helper:
 
-Internally, PymtHouse maps the `subject_token`'s `sub` (app-user id) to an `end_users` record via `findOrCreateAppEndUser` before binding the device grant. This ensures the grant's `accountId` resolves through `findAccount` — which looks up `users` / `end_users` — so that subsequent token operations against the bound grant succeed. The detail is transparent to your integration, but explains why the subject token must belong to the public app client and not be an arbitrary JWT.
+```ts
+await client.approveDeviceLogin({
+  externalUserId: "naap-user-123",
+  userCode: "ABCD-EFGH",
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID,
+});
+```
 
 ---
 
@@ -107,8 +114,8 @@ Use this operation to exchange a short-lived user access token for a long-lived 
 
 ### Prerequisites
 
-- **HTTP Basic auth** with the confidential **M2M** client (`m2m_…` and secret). The public `app_…` client cannot authenticate this grant.
-- The M2M client's `allowed_scopes` must include **`users:token`** (per-user billing). The same scope gates this exchange as for [User tokens](/integration/user-tokens) and device completion.
+- **HTTP Basic auth** with the confidential **M2M** client (`m2m_…` and secret).
+- The M2M client's `allowed_scopes` must include **`users:token`**.
 - The `subject_token` must already contain **`sign:job`** scope.
 
 ### Subject token binding
@@ -117,8 +124,6 @@ The `subject_token` must be a JWT from this issuer whose `client_id` or `azp` is
 
 - The **public** `app_…` client for the same developer app as the authenticating M2M client (typical after interactive login or Builder user-token mint), or
 - The same **M2M** `client_id` as the request (legacy `client_credentials` access token used as `subject_token`).
-
-This mirrors device completion: the backend proves possession of the M2M secret while the user token remains bound to the public client.
 
 ### Request
 
@@ -138,14 +143,7 @@ curl -sS \
   "${ISSUER}/token"
 ```
 
-Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client always sends a resource indicator (RFC 8707). Do not use `urn:pmth:device_code:…` here — that routes to device completion.
-
-### Security constraints
-
-- **M2M authentication** is required; the subject JWT may be for the public sibling or the same M2M client (see above).
-- The `subject_token` must already contain `sign:job` scope. The exchange does not escalate scope.
-- Optional RFC 8693 parameters: if `audience` or `requested_token_type` are sent, they must be valid for this exchange (audience must name this authorization server; issued token type is an access token).
-- Signer session tokens are long-lived; treat them with the same care as refresh tokens.
+Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client always sends a resource indicator (RFC 8707).
 
 ### Response
 
@@ -158,6 +156,73 @@ Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client
 }
 ```
 
+SDK helpers:
+
+```ts
+// Exchange a user JWT for a signer session
+const session = await client.exchangeForSignerSession({ userJwt: accessToken });
+
+// Mint user JWT + exchange in one call
+const session = await client.mintUserSignerSessionToken({
+  externalUserId: "naap-user-123",
+  scope: "sign:job",
+});
+
+// Full workflow: upsert user + mint + exchange
+const session = await client.mintSignerSessionForExternalUser({
+  externalUserId: "naap-user-123",
+  email: "user@example.com",
+});
+// session.accessToken is opaque pmth_…
+```
+
+---
+
+## Clearinghouse signer mint (Option A)
+
+M2M clients with `sign:mint_user_token` scope (automatically added when the public client has `sign:job`) can mint a user-scoped signer JWT and receive allowance balance information in a single `client_credentials` call. This avoids the separate Builder API user-token step.
+
+### Request
+
+```bash
+ISSUER="${BASE_URL}/api/v1/oidc"
+M2M_ID="m2m_yourClientId"
+M2M_SECRET="pmth_cs_yourSecret"
+
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=${M2M_ID}" \
+  --data-urlencode "client_secret=${M2M_SECRET}" \
+  --data-urlencode "scope=sign:mint_user_token" \
+  --data-urlencode "external_user_id=naap-user-123" \
+  --data-urlencode "audience=livepeer-remote-signer" \
+  "${ISSUER}/token"
+```
+
+### Response
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "scope": "sign:job",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000"
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `access_token` | User-scoped JWT with `aud=livepeer-remote-signer`. Use as a Bearer token at the remote signer DMZ. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance for the user in USD micros. |
+| `lifetimeGrantedUsdMicros` | Total lifetime granted allowance for the user. |
+
+<Note>
+  `sign:mint_user_token` is automatically granted to M2M clients when the public sibling client has `sign:job` in its `allowed_scopes`. No manual scope configuration is required.
+</Note>
+
 ---
 
 ## Error responses
@@ -167,21 +232,23 @@ Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client
 | `400 invalid_grant` | `subject_token` is expired, invalid signature, or wrong issuer. |
 | `400 invalid_request` | Missing required parameter, or `resource` value not recognized. |
 | `401 Unauthorized` | M2M / client credentials invalid. |
-| `403 Forbidden` | M2M client lacks the required scope (`device:approve` or `users:token`), or `subject_token` client mismatch. |
+| `403 Forbidden` | M2M client lacks the required scope (`device:approve`, `users:token`, or `sign:mint_user_token`), or `subject_token` client mismatch. |
 
 ---
 
 ## Key design decisions
 
-1. **Single token endpoint for both exchange types.** Routing both device completion and signer session exchange through `POST {issuer}/token` with different `resource` values keeps the public surface area minimal and consistent with RFC 8693 semantics. A separate `/device/approve` URL would require registering and documenting yet another endpoint.
-2. **`resource` as the dispatch discriminator.** Using `urn:pmth:device_code:<user_code>` as the `resource` signals device completion intent clearly and aligns with RFC 8707 resource indicator semantics, which describe `resource` as identifying the target service or resource.
-3. **Binding is a side-effect, not the primary response.** RFC 8693 specifies that the response body contains a token; the device grant binding happens as an implementation side-effect. This means the CLI polls the standard device code endpoint rather than a proprietary callback, keeping device polling logic independent of the Option B backend.
-4. **Subject token must carry the public `app_…` client id (device completion).** This constraint ensures that the token used to bind the device grant was issued by the correct app context. Signer session exchange additionally allows a subject JWT issued to the paired M2M client when proving possession of that M2M secret at the token endpoint.
+1. **Single token endpoint for all exchange types.** Routing device completion, signer session exchange, and signer JWT mint through `POST {issuer}/token` keeps the public surface minimal and consistent with RFC standards.
+2. **`resource` as the dispatch discriminator.** `urn:pmth:device_code:<user_code>` signals device completion; absence or the issuer URL routes to signer session exchange.
+3. **Binding is a side-effect, not the primary response.** The CLI polls the standard device code endpoint rather than a proprietary callback, keeping device polling logic independent of the Option B backend.
+4. **Option A (`sign:mint_user_token`)** minimizes round trips for clearinghouse integrators — one call returns both the signer JWT and the user's current balance.
 
 ## Implementation tasks
 
-- Mint the user JWT via the Builder API **before** calling the token exchange — the exchange uses it as the `subject_token`.
-- Validate that your backend stores the `user_code` from the device code response and passes it verbatim to the `resource` parameter. Case and separator must match.
-- Confirm the M2M client has `device:approve` or `users:token` in `allowed_scopes` before attempting device completion.
-- For signer session exchange, verify the `subject_token` contains `sign:job` before calling — the endpoint will reject it otherwise, and you want to surface that early with a clear error.
+- For device completion: mint the user JWT via the Builder API **before** calling the token exchange.
+- Validate that your backend stores the `user_code` from the device code response and passes it verbatim to the `resource` parameter.
+- For signer session exchange, verify the `subject_token` contains `sign:job` before calling.
+- For Option A: ensure the M2M client has `sign:mint_user_token` in `allowed_scopes` (automatically derived from public client's `sign:job`).
+- Check `balanceUsdMicros` from the Option A response to gate access before forwarding to the DMZ.
 - Do not retry a device completion exchange with the same `user_code` after success; the grant has already been bound.
+- After obtaining a signer session or signer JWT, forward it to the remote signer DMZ — see [Signer routing](/integration/signer-routing).

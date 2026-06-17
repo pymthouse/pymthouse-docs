@@ -1,9 +1,9 @@
 ---
 title: User management
-description: Create, upsert, update, and deactivate users in your PymtHouse app tenant via the Builder API.
+description: Create, upsert, update, and deactivate users in your PymtHouse app tenant via the Builder API. Manage per-user API keys, allowances, and subscription state.
 ---
 
-The Builder API exposes a set of user management endpoints scoped to your app tenant. These endpoints let your backend provision the user records that PymtHouse needs to issue user-scoped JWTs and attribute usage to individuals.
+The Builder API exposes a set of user management endpoints scoped to your app tenant. These endpoints let your backend provision the user records that PymtHouse needs to issue user-scoped JWTs, attribute usage to individuals, and manage per-user billing entitlements.
 
 All endpoints require a **confidential M2M client** for authentication. See [Machine access](/integration/machine-access) for the two auth patterns (Bearer token and HTTP Basic auth).
 
@@ -13,10 +13,10 @@ PymtHouse maps your user identifiers using two distinct id spaces:
 
 | Identifier | Source | Stability | Use |
 | --- | --- | --- | --- |
-| `externalUserId` | Your system | You control it | Join key between your user system and PymtHouse. Pass in create/upsert requests. |
+| `externalUserId` | Your system | You control it | Join key between your user system and PymtHouse. Pass in create/upsert requests and API paths. |
 | `endUserId` | PymtHouse-assigned UUID | Stable after creation | Internal reference; returned by the Usage API for per-user attribution. |
 
-Never construct Builder API paths with internal PymtHouse IDs — always use `externalUserId` in paths and request bodies. Internal database ids are implementation details and are not part of the API contract.
+Never construct Builder API paths with internal PymtHouse IDs — always use `externalUserId` in paths and request bodies.
 
 ## Base path
 
@@ -35,7 +35,7 @@ export M2M_ID="m2m_yourClientId"
 export M2M_SECRET="pmth_cs_yourSecret"
 ```
 
-Required M2M scopes per endpoint:
+Required M2M scopes per operation:
 
 | Operation | Required scope |
 | --- | --- |
@@ -43,6 +43,8 @@ Required M2M scopes per endpoint:
 | Create or upsert | `users:write` |
 | Update | `users:write` |
 | Deactivate | `users:write` |
+| Mint user token | `users:token` |
+| Per-user API keys | `users:write` |
 
 ---
 
@@ -71,7 +73,7 @@ Authorization: Basic base64(m2m_id:m2m_secret)
 Content-Type: application/json
 ```
 
-This operation is **idempotent**: sending the same `externalUserId` again updates the existing record rather than creating a duplicate. Use this for both first-time provisioning and attribute updates in a single call path.
+This operation is **idempotent**: sending the same `externalUserId` again updates the existing record rather than creating a duplicate. New users are automatically subscribed to the app's Starter plan.
 
 ### Request body
 
@@ -104,7 +106,7 @@ curl -sS \
 ```
 
 <Tip>
-  The upsert uses a database-level `ON CONFLICT DO UPDATE` to avoid duplicate-key races under concurrent provisioning. It is safe to call from multiple backend instances simultaneously.
+  The upsert uses a database-level `ON CONFLICT DO UPDATE` to avoid duplicate-key races under concurrent provisioning. It is safe to call from multiple backend instances simultaneously. New users are auto-subscribed to the Starter plan on first provision.
 </Tip>
 
 ---
@@ -149,12 +151,100 @@ curl -sS -X DELETE \
 
 ---
 
+## Per-user API keys
+
+Long-lived opaque API keys (`pmth_*`) can be issued per-user and exchanged for short-lived JWTs or signer sessions without repeating device login.
+
+```http
+GET    /api/v1/apps/{clientId}/users/{externalUserId}/keys
+POST   /api/v1/apps/{clientId}/users/{externalUserId}/keys
+DELETE /api/v1/apps/{clientId}/users/{externalUserId}/keys
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+**GET** returns the list of active API keys for the user.
+
+**POST** creates a new key. Response includes the full `pmth_*` secret (shown once only):
+
+```json
+{
+  "keyId": "key-uuid",
+  "apiKey": "pmth_ak_...",
+  "createdAt": "2026-04-01T00:00:00.000Z"
+}
+```
+
+**DELETE** with `?keyId=<uuid>` revokes the key immediately.
+
+Exchange a per-user API key for a short-lived JWT:
+
+```http
+POST /api/v1/apps/{clientId}/auth/api-key/token
+Authorization: Bearer pmth_ak_...
+Content-Type: application/json
+
+{ "scope": "sign:job" }
+```
+
+See [API keys](/integration/api-keys) for the full exchange flow.
+
+---
+
+## App-level API keys
+
+App-level API keys (tied to a subscription) are managed separately:
+
+```http
+GET    /api/v1/apps/{clientId}/keys
+POST   /api/v1/apps/{clientId}/keys
+DELETE /api/v1/apps/{clientId}/keys
+```
+
+Auth: provider dashboard session. These keys are suitable for integrations where a single credential covers the entire app rather than individual users.
+
+---
+
+## User allowances and entitlements
+
+Per-user USD micro allowances are managed via the allowances endpoint:
+
+```http
+GET  /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+POST /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+```
+
+And balance is checked at:
+
+```http
+GET /api/v1/apps/{clientId}/usage/balance?externalUserId={externalUserId}
+```
+
+See [Allowances](/integration/allowances) for the full reference.
+
+<Note>
+  The deprecated `credits` alias (`.../{externalUserId}/credits`) re-exports allowances. Use `/allowances` for new integrations.
+</Note>
+
+---
+
+## User subscription status
+
+Read the OpenMeter subscription state for a specific end-user:
+
+```http
+GET /api/v1/apps/{clientId}/users/{externalUserId}/subscription
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Returns the user's active plan subscription (Starter or a paid checkout plan), including status, period, and entitlement details.
+
+---
+
 ## Bulk provisioning
 
 There is no batch endpoint. For bulk provisioning, loop over your user set and call POST for each user. The upsert semantics make it safe to re-run the loop — already-provisioned users will be updated in place.
 
 ```bash
-# Example: provision a list of users from a newline-delimited file
 while IFS=',' read -r external_id email; do
   curl -sS \
     -u "${M2M_ID}:${M2M_SECRET}" \
@@ -175,21 +265,22 @@ For high-volume initial imports, acquire one machine token (client credentials g
 | `400 Bad Request` | Missing `externalUserId`, malformed JSON, or invalid `status` value. |
 | `401 Unauthorized` | Invalid M2M credentials or expired Bearer token. |
 | `403 Forbidden` | M2M client lacks the required scope (`users:write` or `users:read`). |
-| `404 Not Found` | `clientId` in the path does not match the authenticated M2M client's app. |
+| `404 Not Found` | `clientId` in the path does not match the authenticated M2M client's app, or `externalUserId` not found. |
 
 ---
 
 ## Key design decisions
 
-1. **`externalUserId` as the join key, not an internal ID.** This eliminates the need for integrators to store PymtHouse-internal IDs and removes the risk of foreign-key coupling between two systems. The internal id (`endUserId`) is exposed only where needed for usage attribution.
-2. **Upsert semantics by default on POST.** A pure "create" operation would require integrators to handle `409 Conflict` on every retry or network failure. Upsert makes provisioning idempotent, which is the correct default for infrastructure-level user sync operations.
-3. **Soft delete only (`status: inactive`).** Hard-deleting a user record would orphan historical usage records. Keeping the record with an inactive status preserves the join between `usage_records.user_id` and `app_users` for retrospective billing and audit.
-4. **Tenant boundary enforced by path + auth match.** Encoding the `clientId` in the URL path and verifying it server-side against the authenticated credential makes the tenant scope explicit in every request and prevents a valid but cross-tenant credential from reading or modifying another app's user set.
+1. **`externalUserId` as the join key, not an internal ID.** This eliminates the need for integrators to store PymtHouse-internal IDs and removes the risk of foreign-key coupling between two systems.
+2. **Upsert semantics by default on POST.** Idempotent provisioning makes it safe to call from retry logic or concurrent workers.
+3. **Soft delete only (`status: inactive`).** Hard-deleting a user record would orphan historical usage records. Keeping the record preserves the join between `usage_records.user_id` and `app_users`.
+4. **Auto-Starter subscription on provision.** New users start with the Starter plan allowance immediately after `POST /users`, without requiring a separate subscription step.
 
 ## Implementation tasks
 
 - Call POST with `externalUserId` during your user creation flow so the PymtHouse record is ready before the first JWT mint.
-- Implement a lightweight reconciliation job that calls POST/PUT for users whose attributes have changed in your system, keeping PymtHouse's records in sync.
-- When deactivating users in your system, call DELETE on the PymtHouse side to prevent new JWT issuance for inactive users.
-- Ensure your `externalUserId` values are stable and unique within your app. Changing them after provisioning breaks the join key and results in a duplicate user record.
+- Implement a lightweight reconciliation job that calls POST/PUT for users whose attributes have changed in your system.
+- When deactivating users in your system, call DELETE on the PymtHouse side to prevent new JWT issuance.
+- Ensure your `externalUserId` values are stable and unique within your app.
+- Use `GET .../usage/balance` before allowing signed requests to verify the user has remaining entitlement.
 - For high-concurrency environments, use the Bearer token pattern (one token per batch) rather than re-authenticating on each call.

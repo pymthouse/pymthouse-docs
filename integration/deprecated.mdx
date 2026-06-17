@@ -1,0 +1,186 @@
+---
+title: Deprecated routes and migrations
+description: Migration guide for removed endpoints. The hosted signer proxy, synchronous signed-ticket ingest, and legacy subscription and credits endpoints have been replaced.
+---
+
+This page documents endpoints that have been **removed** (returning `410 Gone`) or **deprecated** in PymtHouse v0.2.x. Follow the migration steps to update your integration.
+
+---
+
+## Hosted signer proxy removed (`/api/signer/*`)
+
+**Affected routes (all return `410 Gone`):**
+
+| Route | Removed |
+| --- | --- |
+| `POST /api/signer/generate-live-payment` | v0.2.x |
+| `POST /api/signer/sign-orchestrator-info` | v0.2.x |
+| `POST /api/signer/sign-byoc-job` | v0.2.x |
+| `GET /api/signer/discover-orchestrators` | v0.2.x |
+
+### Why it was removed
+
+The hosted `/api/signer/*` HTTP proxy was a synchronous pass-through between your backend and the go-livepeer DMZ. It created a PymtHouse-hosted bottleneck on the signing hot path and was incompatible with direct DMZ deployments.
+
+### Migration
+
+**Step 1:** Fetch the remote DMZ URL and webhook URL for your app:
+
+```http
+GET /api/v1/apps/{clientId}/signer/routing
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Response includes `dmzUrl` and `webhookUrl`.
+
+**Step 2:** Use `@pymthouse/builder-sdk/signer/server` to proxy requests directly to the DMZ:
+
+```ts
+import { createDirectSignerProxyHandler } from "@pymthouse/builder-sdk/signer/server";
+import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+
+const client = createPmtHouseClientFromEnv();
+const routing = await client.getSignerRouting();
+
+const handler = createDirectSignerProxyHandler({
+  client,
+  dmzUrl: routing.dmzUrl,
+});
+```
+
+**Step 3:** Set up the go-livepeer identity webhook using `@pymthouse/builder-sdk/signer/webhook`:
+
+```ts
+import {
+  createRemoteSignerAuthorizeHandler,
+  createOidcRemoteSignerWebhookConfig,
+} from "@pymthouse/builder-sdk/signer/webhook";
+
+const authorize = createRemoteSignerAuthorizeHandler(
+  createOidcRemoteSignerWebhookConfig({
+    webhookSecret: process.env.WEBHOOK_SECRET!,
+    jwtIssuer: process.env.PYMTHOUSE_ISSUER_URL!,
+    jwtAudience: process.env.JWT_AUDIENCE!,
+  }),
+);
+```
+
+See [Signer routing](/integration/signer-routing) for the full setup guide.
+
+<Note>
+  `POST /api/signer/device/exchange` is **not** removed — it is an active SDK helper for device token → signer JWT exchange. Only the `generate-live-payment`, `sign-orchestrator-info`, `sign-byoc-job`, and `discover-orchestrators` proxy routes are gone.
+</Note>
+
+---
+
+## Synchronous signed-ticket ingest removed
+
+**Affected route:**
+
+| Route | Status |
+| --- | --- |
+| `POST /api/v1/apps/{clientId}/usage/signed-tickets` | `410 Gone` |
+| `POST /api/v1/subscriptions` | `410 Gone` |
+| `DELETE /api/v1/subscriptions` | `410 Gone` |
+
+### Why it was removed
+
+Synchronous HTTP ingest on the signing hot path added latency and created a PymtHouse-side bottleneck. Production metering is now **asynchronous**: go-livepeer emits `create_signed_ticket` events to Kafka (`livepeer-gateway-events`); the OpenMeter collector consumes Kafka and writes CloudEvents to OpenMeter/Konnect.
+
+### Migration
+
+**No direct replacement for synchronous ingest from your backend.** Metering is handled by the go-livepeer DMZ and Kafka collector automatically when signing requests are processed through the DMZ.
+
+**Diagnostic-only ingest** remains available at:
+
+```http
+POST /api/v1/ingest/events
+Authorization: Bearer INGEST_SHARED_SECRET
+```
+
+This endpoint is for monitoring and diagnostics only — it does **not** write authoritative billing usage to OpenMeter.
+
+To verify usage is flowing, query the Usage API after signing requests:
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?groupBy=pipeline_model" | jq .
+```
+
+---
+
+## Subscription CRUD removed
+
+**Affected routes:**
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `POST /api/v1/subscriptions` | `410 Gone` | Use `POST .../plans` + OpenMeter checkout |
+| `DELETE /api/v1/subscriptions` | `410 Gone` | Use `DELETE .../plans?planId=` |
+| `GET /api/v1/subscriptions` | Deprecated (returns legacy cache rows) | Use `GET .../plans` or `GET .../users/{id}/subscription` |
+
+Manage subscriptions through the plans CRUD API (dashboard session) or the OpenMeter billing checkout flow. See [Plans](/integration/plans) and [Allowances](/integration/allowances).
+
+---
+
+## Deprecated `credits` alias
+
+**Affected routes:**
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `GET .../users/{id}/credits` | Deprecated alias | `GET .../users/{id}/allowances` |
+| `POST .../users/{id}/credits` | Removed / redirects | `POST .../users/{id}/allowances` |
+
+The `credits` endpoints re-export the `allowances` endpoints. The `POST` route has been removed from PymtHouse. Update all references:
+
+```diff
+- GET /api/v1/apps/{clientId}/users/{externalUserId}/credits
++ GET /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+
+- POST /api/v1/apps/{clientId}/users/{externalUserId}/credits
++ POST /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+```
+
+SDK:
+
+```diff
+- await client.getUserCredits(externalUserId)
++ await client.getUserAllowances(externalUserId)
+
+- await client.grantUserCredits(externalUserId, input)
++ await client.grantUserAllowance(externalUserId, input)
+```
+
+---
+
+## Deprecated discovery profiles
+
+**Affected routes:**
+
+| Route | Status |
+| --- | --- |
+| `GET/POST .../discovery-profiles` | Legacy — still functional, not removed |
+| `GET/PUT/DELETE .../discovery-profiles/{id}` | Legacy — still functional, not removed |
+
+Discovery profiles are a legacy mechanism for expressing pipeline/model capability sets on plans. They remain functional for backward compatibility but new integrations should use `GET/PUT .../manifest` for network capability management.
+
+---
+
+## Summary table
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `POST /api/signer/generate-live-payment` | `410 Gone` | `createDirectSignerProxyHandler` + DMZ |
+| `POST /api/signer/sign-orchestrator-info` | `410 Gone` | Direct DMZ |
+| `POST /api/signer/sign-byoc-job` | `410 Gone` | Direct DMZ |
+| `GET /api/signer/discover-orchestrators` | `410 Gone` | `GET .../manifest` |
+| `POST .../usage/signed-tickets` | `410 Gone` | Kafka async metering (no replacement) |
+| `POST /api/v1/subscriptions` | `410 Gone` | Plans CRUD + checkout |
+| `DELETE /api/v1/subscriptions` | `410 Gone` | Plans CRUD |
+| `POST .../users/{id}/credits` | Removed | `POST .../users/{id}/allowances` |
+| `GET .../users/{id}/credits` | Deprecated alias | `GET .../users/{id}/allowances` |
+| `getUserCredits()` SDK method | Deprecated | `getUserAllowances()` |
+| `grantUserCredits()` SDK method | Deprecated | `grantUserAllowance()` |
+| `ingestSignedTicket()` SDK method | Legacy | No direct replacement (Kafka handles metering) |

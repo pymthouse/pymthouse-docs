@@ -1,0 +1,175 @@
+---
+title: API keys
+description: Long-lived opaque pmth_* API keys for app-level and per-user integrations. Exchange for short-lived JWTs or signer sessions.
+---
+
+PymtHouse issues **long-lived opaque API keys** prefixed `pmth_*`. These complement short-lived JWTs: instead of repeating a device login or a full OAuth flow, your integration exchanges a stored API key for a short-lived JWT on demand.
+
+Two types of API keys exist:
+
+| Type | Prefix | Scope | Created via |
+| --- | --- | --- | --- |
+| **M2M client secret** | `pmth_cs_…` | App-level (all users) | App credentials endpoint |
+| **Per-user API key** | `pmth_ak_…` | Scoped to one `externalUserId` | `POST .../users/{id}/keys` |
+| **App-level API key** | `pmth_ak_…` | Tied to an app subscription | `POST .../keys` |
+
+## Per-user API keys
+
+Issue long-lived API keys to specific end-users. These are suitable for CLI tools and service accounts where the user authenticates once and stores the key.
+
+### Create a key
+
+```http
+POST /api/v1/apps/{clientId}/users/{externalUserId}/keys
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+The full `pmth_*` secret is returned **once only** at creation time. Store it securely.
+
+```bash
+export BASE_URL="https://your-pymthouse.example"
+export CLIENT_ID="app_yourClientId"
+export M2M_ID="m2m_yourClientId"
+export M2M_SECRET="pmth_cs_yourSecret"
+
+curl -sS -X POST \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/users/user-123/keys"
+```
+
+Response:
+
+```json
+{
+  "keyId": "key-uuid",
+  "apiKey": "pmth_ak_abc123...",
+  "createdAt": "2026-04-01T00:00:00.000Z"
+}
+```
+
+### List keys
+
+```http
+GET /api/v1/apps/{clientId}/users/{externalUserId}/keys
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Returns key IDs and creation timestamps. The `pmth_*` value is never returned after creation.
+
+### Revoke a key
+
+```http
+DELETE /api/v1/apps/{clientId}/users/{externalUserId}/keys?keyId={keyId}
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Revocation is immediate. Any exchange request using the revoked key returns `401`.
+
+---
+
+## App-level API keys
+
+App-level keys are tied to a subscription and suitable for app-wide machine access without a specific user context.
+
+```http
+GET    /api/v1/apps/{clientId}/keys
+POST   /api/v1/apps/{clientId}/keys
+DELETE /api/v1/apps/{clientId}/keys
+```
+
+Auth: provider dashboard session. Returns the same `pmth_ak_…` format.
+
+---
+
+## Exchange API key → short-lived JWT
+
+Exchange a `pmth_*` API key for a short-lived user JWT using Bearer auth:
+
+```http
+POST /api/v1/apps/{clientId}/auth/api-key/token
+Authorization: Bearer pmth_ak_abc123...
+Content-Type: application/json
+```
+
+Optional request body:
+
+```json
+{ "scope": "sign:job" }
+```
+
+Response: OIDC token bundle.
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "scope": "sign:job",
+  "externalUserId": "user-123"
+}
+```
+
+```bash
+API_KEY="pmth_ak_abc123..."
+
+curl -sS -X POST \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"scope":"sign:job"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/auth/api-key/token"
+```
+
+SDK:
+
+```ts
+const tokens = await client.exchangeApiKeyForUserAccessToken({
+  apiKey: process.env.PMTH_API_KEY!,
+});
+// tokens.access_token — short-lived JWT for the user
+// tokens.externalUserId — resolved external user id
+```
+
+---
+
+## Exchange API key → signer session
+
+Skip the separate signer session exchange by using the SDK helper, which calls the API key token endpoint and then performs the RFC 8693 exchange in one step:
+
+```ts
+const session = await client.exchangeApiKeyForSignerSession({
+  apiKey: process.env.PMTH_API_KEY!,
+  facadeUrl: process.env.DASHBOARD_ORIGIN!, // e.g. https://dashboard.example.com
+  scope: "sign:job",
+});
+// session.access_token — opaque pmth_… signer bearer for the DMZ
+```
+
+---
+
+## Validate an API key (subscription-backed)
+
+To validate a Bearer `pmth_*` key and check the associated plan and capabilities, use the internal validation endpoint. This is used by integrations that need to gate access before processing a request:
+
+```http
+GET /api/v1/auth/validate
+Authorization: Bearer pmth_ak_abc123...
+```
+
+Returns `{ valid: true, planId: "...", capabilities: [...] }` on success.
+
+---
+
+## Security guidance
+
+- Store API keys in a secret manager, not in source code or environment files committed to version control.
+- The `pmth_*` secret is returned once at creation. If lost, revoke the key and create a new one.
+- Prefer short-lived JWTs (5-minute TTL) on the signing hot path; exchange the stored API key on demand rather than using it directly as a Bearer token for signing.
+- Revoke keys immediately when a user is deactivated or an integration is disconnected.
+- Use per-user keys (not the M2M client secret `pmth_cs_…`) for end-user-facing integrations so revocation is scoped to one user.
+
+## Related guides
+
+- [User management](/integration/user-management) — provisioning users before issuing keys
+- [Token exchange](/integration/token-exchange) — RFC 8693 signer session exchange
+- [Signer routing](/integration/signer-routing) — using the signer session at the DMZ
+- [Builder SDK](/integration/sdk) — `exchangeApiKeyForUserAccessToken`, `exchangeApiKeyForSignerSession`

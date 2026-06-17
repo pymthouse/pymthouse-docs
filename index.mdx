@@ -3,7 +3,7 @@ title: Developer API Overview
 description: Build on the PymtHouse OIDC issuer and Builder API. Start with the quickstart or jump directly to the guide you need.
 ---
 
-PymtHouse is the **OpenID Connect issuer and builder platform** for integrator applications. Your backend authenticates as a confidential OAuth client, provisions end-users via the Builder API, and uses signed JWTs to gate access to PymtHouse services on their behalf.
+PymtHouse is the **OpenID Connect issuer and builder platform** for integrator applications. Your backend authenticates as a confidential OAuth client, provisions end-users via the Builder API, and uses signed JWTs to gate access to the remote signer DMZ on their behalf.
 
 All integrations share the same identity model: every registered app gets a **public client** (`app_…`) for device and browser flows and a **confidential M2M client** (`m2m_…`) for server-to-server calls. Read [Client model](/integration/client-model) first if this is new to you.
 
@@ -14,7 +14,13 @@ All integrations share the same identity model: every registered app gets a **pu
     Provision a user and mint a scoped JWT in under ten minutes.
   </Card>
   <Card title="Client model" icon="diagram-project" href="/integration/client-model">
-    Understand public vs M2M clients, scopes, and the billing pattern before writing any code.
+    Understand public vs M2M clients, API keys, scopes, and the billing pattern before writing any code.
+  </Card>
+  <Card title="Builder SDK" icon="code" href="/integration/sdk">
+    TypeScript client for the Builder API, OIDC issuer, and signer integration. Install in one line.
+  </Card>
+  <Card title="API keys" icon="key" href="/integration/api-keys">
+    Long-lived pmth_* keys for per-user and app-level integrations. Exchange for short-lived JWTs on demand.
   </Card>
 </CardGroup>
 
@@ -33,7 +39,7 @@ Choose the authentication pattern that matches your integration:
     RFC 8628 device authorization for CLI tools, set-top boxes, and limited-input devices.
   </Card>
   <Card title="Token exchange" icon="arrows-rotate" href="/integration/token-exchange">
-    RFC 8693 token exchange for device completion and remote signer session issuance.
+    RFC 8693 token exchange for device completion, signer sessions, and Option A clearinghouse mint.
   </Card>
 </CardGroup>
 
@@ -41,17 +47,40 @@ Choose the authentication pattern that matches your integration:
 
 <CardGroup cols={2}>
   <Card title="User management" icon="users" href="/integration/user-management">
-    Create, upsert, update, and deactivate users in your app's tenant.
+    Create, upsert, update, and deactivate users. Manage per-user API keys and subscriptions.
   </Card>
-  <Card title="User-scoped JWTs" icon="key" href="/integration/user-tokens">
+  <Card title="User-scoped JWTs" icon="id-badge" href="/integration/user-tokens">
     Mint short-lived access tokens scoped to a specific end-user and capability.
+  </Card>
+  <Card title="Allowances" icon="coins" href="/integration/allowances">
+    Per-user USD micro entitlement balances. Read, grant top-ups, and check real-time access.
+  </Card>
+  <Card title="Signer routing" icon="network-wired" href="/integration/signer-routing">
+    Direct DMZ proxy, identity webhook, and go-livepeer integration patterns.
+  </Card>
+  <Card title="App manifest" icon="list-check" href="/integration/manifest">
+    Network capability manifest — discoverable pipeline/model combinations with ETag caching.
   </Card>
 </CardGroup>
 
 ## Usage and billing
 
-<Card title="Usage API" icon="chart-bar" href="/integration/usage-api">
-  Aggregate request counts and fee totals at the app level or broken down per user.
+<CardGroup cols={2}>
+  <Card title="Usage API" icon="chart-bar" href="/integration/usage-api">
+    Aggregate request counts and fee totals. Group by user, pipeline/model, or daily windows. OpenMeter-backed.
+  </Card>
+  <Card title="Billing summary" icon="receipt" href="/integration/billing">
+    Single-call snapshot: plan, subscription, usage totals, daily timeline, overage, and USD breakdowns.
+  </Card>
+  <Card title="Plans" icon="layer-group" href="/integration/plans">
+    Create, update, sync, and manage billing plans. Includes billing API v2 and Starter plan.
+  </Card>
+</CardGroup>
+
+## Migration
+
+<Card title="Deprecated routes" icon="triangle-exclamation" href="/integration/deprecated">
+  Migration guide for removed endpoints: signer proxy (410), synchronous ingest (410), and deprecated credits/subscriptions.
 </Card>
 
 ## Discovery

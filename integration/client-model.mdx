@@ -1,9 +1,9 @@
 ---
 title: Client model
-description: Public and M2M clients, OAuth scopes, and billing patterns. Read this before writing any integration code.
+description: Public and M2M clients, API keys, OAuth scopes, and billing patterns. Read this before writing any integration code.
 ---
 
-PymtHouse uses a **two-client model** for every interactive developer app. Understanding the split between a public client and a confidential M2M client — and the scope table that governs both — is a prerequisite for correctly implementing any integration pattern.
+PymtHouse uses a **two-client model** for every interactive developer app. Understanding the split between a public client and a confidential M2M client — the scope table that governs both — and the role of opaque API keys is a prerequisite for correctly implementing any integration pattern.
 
 ## The two-client model
 
@@ -29,6 +29,16 @@ OAuth 2.0 draws a hard line between public clients (those that cannot keep a sec
 
 Separating them also means that rotating the M2M secret never affects active device sessions, and that a compromised public `client_id` does not expose any server-side credential.
 
+## API keys (`pmth_*`)
+
+In addition to short-lived JWTs, PymtHouse issues **long-lived opaque API keys** prefixed `pmth_*`. These are used for:
+
+- **M2M client secrets** — The `pmth_cs_…` secret on the confidential client, used for HTTP Basic auth on Builder API calls.
+- **Per-user API keys** — `pmth_ak_…` keys created via `POST .../users/{externalUserId}/keys`, exchangeable for short-lived JWTs or signer sessions.
+- **App-level API keys** — `pmth_ak_…` keys tied to a subscription, created via `POST .../keys`.
+
+API keys are long-lived and must be stored securely server-side. Exchange them for short-lived JWTs on demand rather than using them directly on the signing hot path. See [API keys](/integration/api-keys) for the exchange flows.
+
 ## Environment variables
 
 Follow this naming convention when configuring your integration. Mistakes here are a common source of `400 invalid_scope` and `401` errors.
@@ -36,9 +46,13 @@ Follow this naming convention when configuring your integration. Mistakes here a
 | Variable | Value | Notes |
 | --- | --- | --- |
 | `PYMTHOUSE_ISSUER_URL` | `https://your-pymthouse.example/api/v1/oidc` | Must match `iss` in issued tokens. Use discovery to resolve endpoint paths. |
-| `PMTHOUSE_CLIENT_ID` | `app_…` | Public client id. Use everywhere the user or device sees a `client_id`. |
-| `PMTHOUSE_M2M_CLIENT_ID` | `m2m_…` | Confidential client id. Server-side only. Never expose to the browser or CLI. |
-| `PMTHOUSE_M2M_CLIENT_SECRET` | `pmth_cs_…` | Confidential secret. Server-side only. Rotate via the credentials endpoint. |
+| `PYMTHOUSE_PUBLIC_CLIENT_ID` | `app_…` | Public client id. Use everywhere the user or device sees a `client_id`. |
+| `PYMTHOUSE_M2M_CLIENT_ID` | `m2m_…` | Confidential client id. Server-side only. Never expose to the browser or CLI. |
+| `PYMTHOUSE_M2M_CLIENT_SECRET` | `pmth_cs_…` | Confidential secret. Server-side only. Rotate via the credentials endpoint. |
+
+<Note>
+  The `@pymthouse/builder-sdk/env` subpath reads these exact variable names. See [Builder SDK](/integration/sdk).
+</Note>
 
 ## OAuth scopes
 
@@ -54,21 +68,22 @@ These scopes are configured on the public `app_…` client. They govern:
 
 | Scope | Effect |
 | --- | --- |
-| `sign:job` | Grants access to sign a job. Default scope for user-token mint if none is specified. |
+| `sign:job` | Grants access to sign a job. Default scope for user-token mint if none is specified. Also causes `sign:mint_user_token` to be auto-added to the paired M2M client. |
 | `users:token` | Marks the app as **per-user billing mode** (see below). Also required on the M2M client for minting operations. |
 
 ### M2M client scopes (`allowed_scopes`)
 
 These scopes gate server-side calls from the confidential `m2m_…` client.
 
-| Scope | Endpoint |
+| Scope | Endpoint / operation |
 | --- | --- |
 | `users:read` | `GET /api/v1/apps/{clientId}/users` |
 | `users:write` | `POST`, `PUT`, `DELETE` on `/api/v1/apps/{clientId}/users` |
-| `users:token` | `POST /api/v1/apps/{clientId}/users/{externalUserId}/token`; also required for RFC 8693 device completion |
+| `users:token` | `POST .../users/{externalUserId}/token`; RFC 8693 device completion and signer session exchange |
 | `device:approve` | Alternative to `users:token` for RFC 8693 device completion only |
+| `sign:mint_user_token` | Auto-added when public client has `sign:job`. Enables Option A clearinghouse signer mint via `client_credentials` + `external_user_id` parameter. |
 
-Grant only the minimum scopes the server-side flow requires. `users:read` and `users:write` are independent; a backend that only provisions users but never lists them should not have `users:read`.
+Grant only the minimum scopes the server-side flow requires.
 
 ## Billing pattern
 
@@ -89,13 +104,15 @@ Clients are created and managed through the developer dashboard or API. `npm run
 
 1. **`client_id` as the URL tenant identifier.** All Builder API paths use `/api/v1/apps/{clientId}/…` where `clientId` is the public `app_…` value. This avoids exposing internal database IDs and keeps the URL stable across secret rotations.
 2. **Secrets on M2M only.** Placing the secret exclusively on the M2M client allows the public client to be freely embedded in CLI binaries, native apps, and JavaScript SDKs without creating a secret-exposure risk.
-3. **Scope policy on the public client governs JWT claims.** Validating the requested scope for user-JWT minting against the public client — rather than the M2M client — means users cannot receive capabilities that exceed what the app registered for, regardless of which server-side credential makes the request.
-4. **Billing pattern inferred from scope.** Using the presence of `users:token` in `allowed_scopes` rather than a separate flag means the billing mode is a direct consequence of the integration pattern rather than an independent setting that can drift out of sync.
+3. **Scope policy on the public client governs JWT claims.** Validating the requested scope for user-JWT minting against the public client means users cannot receive capabilities that exceed what the app registered for.
+4. **Billing pattern inferred from scope.** Using the presence of `users:token` in `allowed_scopes` rather than a separate flag means the billing mode is a direct consequence of the integration pattern rather than an independent setting.
+5. **`sign:mint_user_token` auto-derived.** Auto-adding this scope to M2M clients when the public client has `sign:job` prevents a configuration footgun where the public scope and M2M clearinghouse capability drift out of sync.
 
 ## Implementation tasks
 
 - Register your app and both clients (public + M2M) before testing any endpoint.
-- Store `PMTHOUSE_M2M_CLIENT_ID` and `PMTHOUSE_M2M_CLIENT_SECRET` in your backend secret manager; never expose them to the browser, mobile app, or CLI.
-- Confirm that `PMTHOUSE_CLIENT_ID` is the `app_…` public id wherever it appears in device or browser flows.
+- Store `PYMTHOUSE_M2M_CLIENT_ID` and `PYMTHOUSE_M2M_CLIENT_SECRET` in your backend secret manager; never expose them to the browser, mobile app, or CLI.
+- Confirm that `PYMTHOUSE_PUBLIC_CLIENT_ID` is the `app_…` public id wherever it appears in device or browser flows.
 - Add only the scopes listed in the table above to each client; remove any default placeholder scopes added by tooling.
 - Rotate M2M secrets through the credentials endpoint; update the secret in your secret manager without touching the public client.
+- For per-user API key flows, use `POST .../users/{externalUserId}/keys` — see [API keys](/integration/api-keys).
