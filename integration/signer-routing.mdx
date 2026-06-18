@@ -27,8 +27,8 @@ sequenceDiagram
   App->>PM: GET .../signer/routing
   PM-->>App: { dmzUrl, webhookUrl, meteringMode }
 
-  App->>OP: Mint user JWT (Builder API /users/{id}/token)
-  OP-->>App: short-lived JWT (sign:job scope)
+  App->>PM: Mint user JWT (Builder API /users/{id}/token)
+  PM-->>App: short-lived JWT (sign:job scope)
 
   App->>OP: RFC 8693 exchange → opaque signer session
   OP-->>App: pmth_… signer session token
@@ -86,7 +86,7 @@ Use `createDirectSignerProxyHandler` to build an HTTP handler in your backend th
 3. Streams the response back to the caller.
 
 ```ts
-import { createDirectSignerProxyHandler } from "@pymthouse/builder-sdk/signer/server";
+import { createDirectSignerProxyHandler, createSignerTokenManager } from "@pymthouse/builder-sdk/signer/server";
 import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
 
 const client = createPmtHouseClientFromEnv();
