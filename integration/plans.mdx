@@ -108,7 +108,7 @@ Content-Type: application/json
 **201 Created** body: `{ "id": "<new-plan-uuid>" }`.
 
 <Note>
-  `is_network_default` cannot be set on custom plans. The Network Price plan (the discovery/manifest plan) is managed separately via `PUT .../manifest`.
+  `is_network_default` cannot be set on custom plans. The Network Price plan is managed separately via the Plans UI.
 </Note>
 
 ---
@@ -120,7 +120,7 @@ PUT /api/v1/apps/{clientId}/plans
 Content-Type: application/json
 ```
 
-Body must include **`id`** (plan UUID). Omitted fields keep existing values. If **`capabilities`** is present, it **replaces** all bundles for that plan; omit the key to leave bundles unchanged. `PUT` on the Network Price plan id returns `400` — edit exclusions via `PUT .../manifest` or the Plans UI.
+Body must include **`id`** (plan UUID). Omitted fields keep existing values. If **`capabilities`** is present, it **replaces** all bundles for that plan; omit the key to leave bundles unchanged. `PUT` on the Network Price plan id returns `400` — edit exclusions via the Plans UI.
 
 **200 OK**: `{ "success": true }`.
 

@@ -3,15 +3,11 @@ title: Signer routing
 description: Integrate directly with the go-livepeer remote signer DMZ. Fetch routing config, proxy signing requests, and handle the identity webhook using @pymthouse/builder-sdk/signer/server and /signer/webhook.
 ---
 
-The PymtHouse hosted `/api/signer/*` HTTP proxy has been **removed** (returns `410 Gone`). Direct signer integration now uses:
+Direct signer integration uses:
 
 1. **`GET .../signer/routing`** — fetch the DMZ URL and webhook URL for your app.
 2. **`@pymthouse/builder-sdk/signer/server`** — proxy signing requests directly to the remote signer DMZ with JWT minting.
 3. **`@pymthouse/builder-sdk/signer/webhook`** — handle go-livepeer identity webhook calls (`POST /authorize`) to authenticate end-users.
-
-<Note>
-  If you are migrating from the removed `/api/signer/*` proxy, see [Deprecated routes](/integration/deprecated).
-</Note>
 
 ## Token lifecycle
 

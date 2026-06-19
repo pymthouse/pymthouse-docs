@@ -40,15 +40,15 @@
               "integration/user-management",
               "integration/user-tokens",
               "integration/allowances",
-              "integration/signer-routing",
-              "integration/manifest"
+              "integration/signer-routing"
             ]
           },
           {
             "group": "Billing API",
             "pages": [
               "integration/billing",
-              "integration/plans"
+              "integration/plans",
+              "integration/usage-api"
             ]
           },
           {
@@ -67,10 +67,6 @@
             "pages": [
               "api-reference/introduction"
             ]
-          },
-          {
-            "group": "Usage API",
-            "pages": ["integration/usage-api"]
           }
         ]
       }

@@ -112,20 +112,11 @@ All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicCl
 | `listBillingProducts()` | `GET .../plans?apiVersion=2` — returns `BillingProduct[]`. |
 | `syncBillingProduct(planId)` | `POST .../plans/{id}/sync` — explicit OpenMeter sync. |
 
-### Manifest & signer routing
+### Signer routing
 
 | Method | Description |
 | --- | --- |
-| `getAppManifest({ ifNoneMatch? })` | `GET .../manifest` with ETag caching. |
 | `getSignerRouting()` | `GET .../signer/routing` — DMZ URL, webhook URL, metering mode. |
-
-### Deprecated
-
-| Method | Replacement |
-| --- | --- |
-| `getUserCredits(externalUserId)` | `getUserAllowances(externalUserId)` |
-| `grantUserCredits(externalUserId, input)` | `grantUserAllowance(externalUserId, input)` |
-| `ingestSignedTicket(input)` | Async Kafka metering (no replacement for direct ingest) |
 
 ## Subpath exports
 
