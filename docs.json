@@ -19,7 +19,11 @@
           },
           {
             "group": "Concepts",
-            "pages": ["integration/client-model"]
+            "pages": [
+              "integration/client-model",
+              "integration/sdk",
+              "integration/api-keys"
+            ]
           },
           {
             "group": "Authentication",
@@ -34,7 +38,10 @@
             "group": "Builder API",
             "pages": [
               "integration/user-management",
-              "integration/user-tokens"
+              "integration/user-tokens",
+              "integration/allowances",
+              "integration/signer-routing",
+              "integration/manifest"
             ]
           },
           {
@@ -42,6 +49,12 @@
             "pages": [
               "integration/billing",
               "integration/plans"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "integration/deprecated"
             ]
           }
         ]

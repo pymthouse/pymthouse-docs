@@ -1,0 +1,228 @@
+---
+title: Builder SDK
+description: TypeScript client for the PymtHouse Builder API, Usage API, and OIDC issuer. Wraps M2M auth, user provisioning, token minting, signer integration, and billing in a single typed package.
+---
+
+`@pymthouse/builder-sdk` is the official TypeScript/npm SDK for PymtHouse app builders. It wraps:
+
+- **Confidential Builder and Usage REST APIs** (M2M auth, user provisioning, billing)
+- **OIDC protocol flows** (token mint, exchange, device login, JWT verify) via [`oauth4webapi`](https://github.com/panva/oauth4webapi)
+- **Signer integration** (direct DMZ proxy and identity webhook for go-livepeer)
+- **Client-safe utilities** (config checks, device-initiate validation, formatting, plan pricing math)
+
+## Install
+
+```bash
+pnpm add @pymthouse/builder-sdk
+# or
+npm install @pymthouse/builder-sdk
+```
+
+Node ≥ 20 required.
+
+## Quick start
+
+### From environment variables (recommended for server use)
+
+```ts
+import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+
+const client = createPmtHouseClientFromEnv();
+const discovery = await client.getDiscovery();
+```
+
+### Explicit construction
+
+```ts
+import { PmtHouseClient } from "@pymthouse/builder-sdk";
+
+const client = new PmtHouseClient({
+  issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+  m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+  m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+});
+```
+
+## Environment variables
+
+The `env` subpath reads these variables. Set them in your backend environment or secret manager.
+
+| Variable | Value | Notes |
+| --- | --- | --- |
+| `PYMTHOUSE_ISSUER_URL` | `https://your-pymthouse.example/api/v1/oidc` | Must match `iss` in issued tokens. |
+| `PYMTHOUSE_PUBLIC_CLIENT_ID` | `app_…` | Public OIDC client id. Used in device/browser flows and JWT claims. |
+| `PYMTHOUSE_M2M_CLIENT_ID` | `m2m_…` | Confidential M2M client id. Server-side only. |
+| `PYMTHOUSE_M2M_CLIENT_SECRET` | `pmth_cs_…` | M2M client secret. Server-side only. Rotate via the credentials endpoint. |
+
+<Warning>
+  The `@pymthouse/builder-sdk/env` subpath throws immediately if imported in a browser context (detects `globalThis.window`). In Next.js, add `import "server-only"` in any file that re-exports `createPmtHouseClientFromEnv` to enforce the server-only constraint at build time.
+</Warning>
+
+## `PmtHouseClient` method reference
+
+All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicClientId}/…`.
+
+### Discovery & OIDC
+
+| Method | Description |
+| --- | --- |
+| `getDiscovery()` | Fetch OIDC discovery document (5-min cache). |
+| `verifyIssuer(iss)` | Validate an issuer URL against this client's issuer. |
+| `issueMachineAccessToken(scope?)` | Client credentials grant; returns a machine access token. |
+
+### User management
+
+| Method | Description |
+| --- | --- |
+| `listAppUsers()` | `GET .../users` — list provisioned users. Requires `users:read`. |
+| `upsertAppUser(input)` | `POST .../users` — create or update a user. Requires `users:write`. |
+| `deleteAppUser({ externalUserId })` | `DELETE .../users` — deactivate a user. |
+
+### Token minting & exchange
+
+| Method | Description |
+| --- | --- |
+| `mintUserAccessToken(input)` | `POST .../users/{id}/token` — short-lived JWT. Requires `users:token`. |
+| `exchangeForSignerSession({ userJwt, resource? })` | RFC 8693: user JWT → opaque `pmth_*` signer session. |
+| `mintUserSignerSessionToken(input)` | Mint user JWT + exchange in one call. |
+| `mintSignerSessionForExternalUser(input)` | Upsert user + mint + exchange workflow. |
+| `createSignerSessionToken({ userJwt? })` | Exchange or fall back to machine token. |
+| `exchangeApiKeyForUserAccessToken({ apiKey })` | `POST .../auth/api-key/token` — API key → short-lived JWT. |
+| `exchangeApiKeyForSignerSession({ apiKey, facadeUrl? })` | API key → opaque signer session. |
+
+### Device flow
+
+| Method | Description |
+| --- | --- |
+| `parseDeviceApprovalRedirect(searchParams)` | Parse initiate-login redirect parameters. |
+| `completeDeviceApproval({ userJwt, userCode })` | RFC 8693 token exchange to bind a device grant. |
+| `approveDeviceLogin(input)` | Full Option B device approval workflow. |
+
+### Usage & billing
+
+| Method | Description |
+| --- | --- |
+| `getUsage(input?)` | `GET .../usage` with groupBy/retail filters. |
+| `fetchUsageForExternalUser(input)` | BFF-style `scope=me` usage rollup for a single user. |
+| `getUsageBalance(externalUserId)` | `GET .../usage/balance` — entitlement balance. |
+| `getUserAllowances(externalUserId)` | `GET .../users/{id}/allowances`. |
+| `grantUserAllowance(externalUserId, input)` | `POST .../users/{id}/allowances`. |
+| `getUserSubscription(externalUserId)` | `GET .../users/{id}/subscription`. |
+| `listBillingProducts()` | `GET .../plans?apiVersion=2` — returns `BillingProduct[]`. |
+| `syncBillingProduct(planId)` | `POST .../plans/{id}/sync` — explicit OpenMeter sync. |
+
+### Manifest & signer routing
+
+| Method | Description |
+| --- | --- |
+| `getAppManifest({ ifNoneMatch? })` | `GET .../manifest` with ETag caching. |
+| `getSignerRouting()` | `GET .../signer/routing` — DMZ URL, webhook URL, metering mode. |
+
+### Deprecated
+
+| Method | Replacement |
+| --- | --- |
+| `getUserCredits(externalUserId)` | `getUserAllowances(externalUserId)` |
+| `grantUserCredits(externalUserId, input)` | `grantUserAllowance(externalUserId, input)` |
+| `ingestSignedTicket(input)` | Async Kafka metering (no replacement for direct ingest) |
+
+## Subpath exports
+
+| Import | Runtime safety | Purpose |
+| --- | --- | --- |
+| `@pymthouse/builder-sdk` | Node + Edge | `PmtHouseClient`, usage helpers, manifest parsers, token helpers, error types |
+| `@pymthouse/builder-sdk/env` | **Node only** (throws in browser) | `createPmtHouseClientFromEnv`, `getPymthouseBaseUrl` |
+| `@pymthouse/builder-sdk/config` | Edge-safe | `isPymthouseConfigured`, `readPymthouseEnv`, URL helpers |
+| `@pymthouse/builder-sdk/tokens` | Edge-safe | Signer session TTL constants, JWT shape helpers, `parseSignerSessionExchange` |
+| `@pymthouse/builder-sdk/device` | Node + Edge | `pollDeviceToken` — RFC 8628 device code polling |
+| `@pymthouse/builder-sdk/device-initiate` | Edge-safe | `validateDeviceInitiateLogin`, `extractDeviceApprovalFromTargetLink` |
+| `@pymthouse/builder-sdk/verify` | Node + Edge | `verifyJwt` — RFC 9068 JWT validation via JWKS |
+| `@pymthouse/builder-sdk/format` | Edge-safe | `formatWeiToEth`, `formatWeiToUsd` — wei display formatting |
+| `@pymthouse/builder-sdk/plan-pricing` | Edge-safe | `markupPercentToRetailRateUsd`, `applyRetailRateToNetworkMicros`, plan pricing math |
+| `@pymthouse/builder-sdk/signer/server` | **Node only** | `createDirectSignerProxyHandler`, `forwardDirectSignerRequest`, `createSignerTokenManager` |
+| `@pymthouse/builder-sdk/signer/webhook` | Node + Edge | `createRemoteSignerAuthorizeHandler`, identity webhook handler + adapters |
+| `@pymthouse/builder-sdk/signer/webhook/adapters/oidc` | Node + Edge | OIDC JWT end-user verifier |
+| `@pymthouse/builder-sdk/signer/webhook/adapters/api-key` | Node + Edge | API key end-user verifier |
+| `@pymthouse/builder-sdk/signer/webhook/adapters/trusted-headers` | Edge-safe | Trusted header end-user verifier |
+| `@pymthouse/builder-sdk/signer/webhook/adapters/composite` | Node + Edge | First-match composite verifier |
+
+## Common usage patterns
+
+### Mint a signer session for a user
+
+```ts
+import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+
+const client = createPmtHouseClientFromEnv();
+
+// Option 1: short-lived JWT only
+const userJwt = await client.mintUserAccessToken({
+  externalUserId: "naap-user-123",
+  scope: "sign:job",
+});
+
+// Option 2: full signer session (JWT + RFC 8693 exchange)
+const session = await client.mintUserSignerSessionToken({
+  externalUserId: "naap-user-123",
+  scope: "sign:job",
+});
+// session.access_token — opaque pmth_… bearer for the DMZ
+
+// Option 3: upsert user + mint + exchange in one call
+const session = await client.mintSignerSessionForExternalUser({
+  externalUserId: "naap-user-123",
+  email: "user@example.com",
+});
+```
+
+### Check usage balance before signing
+
+```ts
+const balance = await client.getUsageBalance("naap-user-123");
+if (!balance.hasAccess) {
+  throw new Error("Insufficient balance");
+}
+```
+
+### Approve a device login (Option B)
+
+```ts
+await client.approveDeviceLogin({
+  externalUserId: "naap-user-123",
+  userCode: "ABCD-EFGH",
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID,
+});
+```
+
+### Usage BFF rollup
+
+```ts
+import { summarizeUsageForExternalUser } from "@pymthouse/builder-sdk";
+
+const usage = await client.getUsage({ groupBy: "user", startDate, endDate });
+const summary = summarizeUsageForExternalUser(usage, "naap-user-123");
+// summary.requestCount, summary.feeWei
+```
+
+### Next.js server-only guard
+
+```ts
+// lib/pymthouse-server.ts
+import "server-only";
+
+export {
+  createPmtHouseClientFromEnv,
+  getPymthouseBaseUrl,
+} from "@pymthouse/builder-sdk/env";
+```
+
+Import `createPmtHouseClientFromEnv` only from this wrapper in Route Handlers or Server Actions.
+
+## Related guides
+
+- [Client model](/integration/client-model) — env variable naming and the two-client pattern
+- [API keys](/integration/api-keys) — exchanging `pmth_*` keys for JWTs
+- [Allowances](/integration/allowances) — entitlement balance and manual top-ups
+- [Signer routing](/integration/signer-routing) — direct DMZ proxy and identity webhook
+- [Token exchange](/integration/token-exchange) — RFC 8693 and Option A/B flows

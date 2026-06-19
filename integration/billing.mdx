@@ -1,11 +1,11 @@
 ---
 title: Billing summary
-description: Retrieve the current billing period, active plan, usage totals, daily timeline, and overage calculations for your app.
+description: Retrieve the current billing period, active plan, usage totals, daily timeline, overage calculations, and USD cost breakdown for your app.
 ---
 
-The billing summary endpoint gives your backend a single snapshot of everything relevant to the current billing cycle: which plan the app is on, the active subscription period, cumulative usage totals, a day-by-day fee timeline, and any overage charges that have accrued.
+The billing summary endpoint gives your backend a single snapshot of everything relevant to the current billing cycle: which plan the app is on, the active subscription period, cumulative usage totals, a day-by-day fee timeline, overage charges, and owner/retail USD breakdowns.
 
-All monetary values are **wei as decimal strings** to preserve precision across the full BigInt range.
+All monetary values are **wei as decimal strings** to preserve precision across the full BigInt range. USD micro values (integer strings, `1000000` = $1.00) are computed once at signing time using the ETH/USD oracle and stored immutably.
 
 ## Authentication
 
@@ -54,7 +54,9 @@ No query parameters.
     "priceAmount": "49.00",
     "priceCurrency": "USD",
     "includedUnits": "100000",
+    "includedUsdMicros": "10000000",
     "overageRateWei": "1000000000000",
+    "billingCycle": "monthly",
     "status": "active"
   },
   "subscription": {
@@ -69,6 +71,11 @@ No query parameters.
     "usage": {
       "requestCount": 8420,
       "totalFeeWei": "8420000000000000",
+      "totalFeeEth": "0.008420",
+      "networkFeeUsdMicros": "25260000",
+      "ownerChargeWei": "9262000000000000",
+      "ownerChargeUsdMicros": "27786000",
+      "platformFeeWei": "842000000000000",
       "totalUnits": "108300"
     },
     "timeline": [
@@ -92,14 +99,21 @@ No query parameters.
 | `plan` | object \| null | Active plan for the app. `null` if no plan is configured. |
 | `plan.type` | `free` \| `subscription` \| `usage` | Determines how overage is calculated. |
 | `plan.includedUnits` | string \| null | Units included in the base price. Numeric string or `null` for free plans. |
+| `plan.includedUsdMicros` | string \| null | Subscription usage allowance in USD micros (e.g. `10000000` = $10.00). |
 | `plan.overageRateWei` | string \| null | Per-unit overage charge in wei. Numeric string or `null` for free plans. |
+| `plan.billingCycle` | string | Billing cycle for the plan. Default `"monthly"`. |
 | `subscription` | object \| null | Owner's active subscription. `null` when no active subscription exists; the period falls back to the calendar month. |
 | `subscription.currentPeriodStart` | string | ISO 8601 start of the current billing period. |
 | `subscription.currentPeriodEnd` | string | ISO 8601 end of the current billing period. |
 | `cycle.periodStart` | string | Effective period start (subscription period or calendar month). |
 | `cycle.periodEnd` | string | Effective period end. |
 | `cycle.usage.requestCount` | integer | Number of usage records in the period. |
-| `cycle.usage.totalFeeWei` | string | Cumulative fees in wei, as a decimal string. |
+| `cycle.usage.totalFeeWei` | string | Cumulative network fees in wei, as a decimal string. |
+| `cycle.usage.totalFeeEth` | string | Decimal ETH equivalent of `totalFeeWei`. |
+| `cycle.usage.networkFeeUsdMicros` | string | Transaction-time USD micros for network cost (oracle-priced at signing time). |
+| `cycle.usage.ownerChargeWei` | string | Network fee plus platform cut, in wei. |
+| `cycle.usage.ownerChargeUsdMicros` | string | Transaction-time USD micros for owner charge. |
+| `cycle.usage.platformFeeWei` | string | PymtHouse platform cut in wei. |
 | `cycle.usage.totalUnits` | string | Cumulative units consumed, as a decimal string. |
 | `cycle.timeline` | array | One entry per calendar day in the period. Days with no usage have `requestCount: 0` and `feeWei: "0"`. |
 | `cycle.timeline[].date` | string | `YYYY-MM-DD` date key (UTC). |
@@ -122,6 +136,50 @@ No query parameters.
 | `usage` | Optional | Optional | Yes — when both fields are set and `totalUnits > includedUnits` |
 
 For `free` plans, `overageUnits` and `overageWei` are always `"0"`.
+
+## Starter plan
+
+Every app has a **Starter** plan created automatically (`isStarterDefault: true`). It is separate from custom billing plans and from the Network Price discovery plan. Starter carries an `includedUsdMicros` allowance (default `5000000` = $5.00) and is automatically synced to OpenMeter.
+
+New end-users are auto-subscribed to the Starter plan when provisioned (via `POST /users`, signer token mint, or signed-ticket ingest) if they have no existing subscription.
+
+Providers can update the Starter allowance via:
+
+```http
+PUT /api/v1/apps/{clientId}/starter-plan
+Content-Type: application/json
+
+{ "includedUsdMicros": "10000000" }
+```
+
+This triggers an immediate OpenMeter plan sync. The response echoes the updated Starter plan.
+
+For per-user entitlement balances and manual top-ups, see [Allowances](/integration/allowances).
+
+## Invoices
+
+Tenant-scoped invoice list (OpenMeter DTO mapped):
+
+```http
+GET /api/v1/apps/{clientId}/billing/invoices
+```
+
+Auth: provider dashboard session (read). Returns a list of invoices for the app's OpenMeter subscriptions.
+
+## Merchant billing (Stripe Connect)
+
+Stripe Connect is used for invoicing and end-user checkout, not for plan provisioning in OpenMeter.
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/apps/{clientId}/billing/stripe` | Provider session | Stripe Connect status for the app |
+| `POST` | `/api/v1/apps/{clientId}/billing/stripe/connect` | App owner or platform admin | Start Stripe Connect OAuth flow |
+| `DELETE` | `/api/v1/apps/{clientId}/billing/stripe` | App owner or platform admin | Disconnect Stripe |
+| `POST` | `/api/v1/apps/{clientId}/billing/checkout` | Provider session | End-user checkout: `{ planId, externalUserId, successUrl?, cancelUrl? }` |
+
+<Note>
+  All Stripe Connect operations require a provider dashboard session. M2M Basic auth is not accepted on these routes.
+</Note>
 
 ## Period fallback
 
@@ -149,7 +207,7 @@ curl -sS \
   | jq '.cycle.overage.overageWei'
 ```
 
-Display current period total in ETH (Node.js):
+Display owner charge in USD (Node.js):
 
 ```bash
 RESPONSE=$(curl -sS \
@@ -158,9 +216,9 @@ RESPONSE=$(curl -sS \
 
 node -e "
   const data = $(echo $RESPONSE | jq -c .);
-  const wei = BigInt(data.cycle.usage.totalFeeWei);
-  const eth = Number(wei) / 1e18;
-  console.log(eth.toFixed(6) + ' ETH');
+  const usdMicros = BigInt(data.cycle.usage.ownerChargeUsdMicros ?? '0');
+  const usd = Number(usdMicros) / 1_000_000;
+  console.log('\$' + usd.toFixed(4));
 "
 ```
 
@@ -179,16 +237,19 @@ node -e "
 
 ## Key design decisions
 
-1. **Single-call snapshot.** Plan, subscription, usage totals, timeline, and overage are assembled in one response so dashboard UIs can render a complete billing view without multiple round trips.
-2. **Day-granularity timeline, not raw records.** The timeline buckets fee and request data by calendar day (UTC), keeping the response size bounded. For raw per-request data, use the Usage API (`GET /api/v1/apps/{clientId}/usage`) documented in [`pymthouse` `docs/builder-api.md`](https://github.com/eliteprox/pymthouse/blob/main/docs/builder-api.md#usage-api).
-3. **Calendar-month fallback when no subscription.** Apps in a trial or free-tier state still get a consistent period reference (the current calendar month) rather than an empty response.
-4. **`404` for all auth and tenant-mismatch failures.** Prevents enumeration of valid `clientId`s — same pattern as the Usage API in [`builder-api.md`](https://github.com/eliteprox/pymthouse/blob/main/docs/builder-api.md#usage-api).
+1. **Single-call snapshot.** Plan, subscription, usage totals, timeline, overage, and USD breakdowns are assembled in one response so dashboard UIs can render a complete billing view without multiple round trips.
+2. **Day-granularity timeline, not raw records.** The timeline buckets fee and request data by calendar day (UTC), keeping the response size bounded. For raw per-pipeline/model data, use `GET /api/v1/apps/{clientId}/usage?groupBy=pipeline_model` (see [Usage API](/integration/usage-api)).
+3. **Calendar-month fallback when no subscription.** Apps on the Starter plan or free-tier state still get a consistent period reference (the current calendar month).
+4. **`404` for all auth and tenant-mismatch failures.** Prevents enumeration of valid `clientId`s.
+5. **USD micros stored at signing time.** Historical USD accuracy depends on the oracle at signing time; do not recompute historical values from the current oracle rate.
 
 ## Implementation tasks
 
 - Parse all `*Wei` fields with `BigInt` before any arithmetic. Do not cast to `Number` before comparing or summing.
-- Use the `timeline` array to drive sparklines or bar charts in your billing dashboard — every calendar day in the period is always present, so you never need to fill gaps client-side.
+- Use `networkFeeUsdMicros` and `ownerChargeUsdMicros` for fiat-denominated cost reporting; `totalFeeWei` for wei-denominated analytics.
+- Use the `timeline` array to drive sparklines or bar charts — every calendar day in the period is always present, so you never need to fill gaps client-side.
 - When `plan` is `null`, surface a "No plan configured" state rather than treating it as an error.
 - For overage alerting, poll this endpoint on a schedule and compare `cycle.overage.overageUnits` against thresholds you define in your system.
-- Cross-reference `cycle.usage.totalFeeWei` with the Usage API in [`builder-api.md`](https://github.com/eliteprox/pymthouse/blob/main/docs/builder-api.md#usage-api) for per-user attribution when you need a detailed breakdown.
+- For per-user attribution and pipeline/model breakdown, use the [Usage API](/integration/usage-api) with `groupBy=user` or `groupBy=pipeline_model`.
 - To create or change plans, use [Plans](/integration/plans) from a provider dashboard session (not M2M).
+- For per-user entitlement balances and allowance top-ups, see [Allowances](/integration/allowances).

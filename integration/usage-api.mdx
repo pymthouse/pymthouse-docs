@@ -1,11 +1,15 @@
 ---
 title: Usage API
-description: Query aggregated request counts and fee totals for your app, with optional per-user attribution, for billing dashboards and cost analytics.
+description: Query aggregated request counts, fee totals, and pipeline/model breakdowns for your app, powered by OpenMeter.
 ---
 
-The Usage API is a read-only endpoint that exposes aggregated usage data for a developer application. It is designed for **billing dashboards**, **cost analytics**, and **per-user attribution** workflows.
+The Usage API is a read-only endpoint that exposes aggregated usage data for a developer application. It is backed by **OpenMeter** (`OPENMETER_URL` is required) — all responses include `"source": "openmeter"`. It is designed for **billing dashboards**, **cost analytics**, **per-user attribution**, and **pipeline/model breakdown** workflows.
 
-All monetary values are expressed in **wei** as decimal strings to preserve precision across the full range of possible fee values.
+All monetary values are expressed in **wei** as decimal strings, with USD micro equivalents available via `include=retail`.
+
+<Note>
+  Synchronous HTTP signed-ticket ingest (`POST .../usage/signed-tickets`) is removed and returns **`410 Gone`**. Production metering is asynchronous: go-livepeer emits `create_signed_ticket` events to Kafka, which the OpenMeter collector consumes. See [Deprecated routes](/integration/deprecated) for migration details.
+</Note>
 
 ## Authentication
 
@@ -24,7 +28,7 @@ No additional scope is required beyond possessing valid M2M credentials — the 
 
 ### Provider dashboard session
 
-A logged-in provider session whose user is the app's owner, a platform admin, or a `providerAdmins` team member may call the endpoint without Basic auth. This is what powers the in-app usage dashboard.
+A logged-in provider session whose user is the app's owner, a platform admin, or a `providerAdmins` team member may call the endpoint without Basic auth.
 
 <Note>
   Requests that satisfy neither auth mode, or whose authenticated principal does not match the path `clientId`, receive **`404 Not Found`**. The endpoint deliberately does not distinguish "unauthenticated" from "not found" to avoid leaking app existence.
@@ -50,12 +54,23 @@ All query parameters are optional.
 | --- | --- | --- | --- |
 | `startDate` | ISO 8601 timestamp | — | Inclusive lower bound on record creation time. |
 | `endDate` | ISO 8601 timestamp | — | Inclusive upper bound on record creation time. |
-| `groupBy` | `none` \| `user` | `none` | When `user`, includes a `byUser` breakdown in the response. |
-| `userId` | string | — | Filter to a single user by their **internal** PymtHouse `endUserId`. |
+| `groupBy` | `none` \| `user` \| `pipeline_model` \| `daily_pipeline` | `none` | Grouping dimension for the response. |
+| `userId` | string | — | Filter to a single user by their **internal** PymtHouse `endUserId`. Required for `daily_pipeline`. |
+| `gatewayRequestId` | string | — | Filter billing events to a specific gateway request. May include `events` detail in the response. |
+| `include` | `retail` | — | When `retail`, adds `endUserBillableUsdMicros` and fiat estimates when the active plan has retail rate cards. |
 
 **Date format:** `Date.parse`-compatible strings are accepted (e.g. `2026-01-01T00:00:00.000Z` or `2026-01-01`). Invalid values return `400 Bad Request`.
 
-**`userId` vs `externalUserId`:** The `userId` parameter accepts the **internal** PymtHouse user id (`endUserId`), not your system's `externalUserId`. To resolve an `externalUserId` to an `endUserId`, call `GET /api/v1/apps/{clientId}/usage?groupBy=user` and inspect the `byUser[].externalUserId` field.
+**`userId` vs `externalUserId`:** The `userId` parameter accepts the **internal** PymtHouse user id (`endUserId`), not your system's `externalUserId`. Resolve an `externalUserId` to an `endUserId` via a prior `groupBy=user` response.
+
+### `groupBy` values
+
+| Value | Description |
+| --- | --- |
+| `none` (default) | App-level totals only. |
+| `user` | Adds `byUser[]` — one entry per distinct end-user. |
+| `pipeline_model` | Adds `byPipelineModel[]` — aggregated from validated `usage_billing_events` rows that have a full `pipeline` + `modelId` constraint. |
+| `daily_pipeline` | Adds `byDailyPipeline[]` — OpenMeter DAY windows per pipeline/model. Requires `userId` filter. |
 
 ## Response
 
@@ -64,13 +79,19 @@ All query parameters are optional.
 ```json
 {
   "clientId": "app_f4c21e7ac5f35d3e91bfad7f",
+  "source": "openmeter",
   "period": {
     "start": "2026-01-01T00:00:00.000Z",
     "end": "2026-12-31T23:59:59.999Z"
   },
   "totals": {
     "requestCount": 1423,
-    "totalFeeWei": "128750000000000000"
+    "totalFeeWei": "128750000000000000",
+    "totalFeeEth": "0.128750",
+    "networkFeeUsdMicros": "386250000",
+    "ownerChargeWei": "141625000000000000",
+    "ownerChargeUsdMicros": "424875000",
+    "platformFeeWei": "12875000000000000"
   },
   "byUser": [
     {
@@ -85,6 +106,15 @@ All query parameters are optional.
       "requestCount": 7,
       "feeWei": "625000000000000"
     }
+  ],
+  "byPipelineModel": [
+    {
+      "pipeline": "text-to-image",
+      "modelId": "stabilityai/sdxl",
+      "requestCount": 820,
+      "networkFeeUsdMicros": "246000000",
+      "endUserBillableUsdMicros": "369000000"
+    }
   ]
 }
 ```
@@ -94,15 +124,28 @@ All query parameters are optional.
 | Field | Type | Description |
 | --- | --- | --- |
 | `clientId` | string | Echo of the path `clientId`. |
+| `source` | `"openmeter"` | Always present. Indicates usage reads from OpenMeter meters. |
 | `period.start` | string \| null | Echo of `startDate`, or `null` if omitted. |
 | `period.end` | string \| null | Echo of `endDate`, or `null` if omitted. |
 | `totals.requestCount` | integer | Total number of usage records matching the filter. |
-| `totals.totalFeeWei` | string | Sum of all fees in wei, as a base-10 decimal string. |
+| `totals.totalFeeWei` | string | Sum of all network fees in wei, as a base-10 decimal string. |
+| `totals.totalFeeEth` | string | Decimal ETH equivalent of `totalFeeWei`. |
+| `totals.networkFeeUsdMicros` | string | Transaction-time USD micros for network cost. |
+| `totals.ownerChargeWei` | string | Network fee plus platform cut, in wei. |
+| `totals.ownerChargeUsdMicros` | string | Transaction-time USD micros for owner charge. |
+| `totals.platformFeeWei` | string | PymtHouse platform cut in wei. |
 | `byUser` | array | Present only when `groupBy=user`. One entry per distinct user. |
 | `byUser[].endUserId` | string | Internal PymtHouse user id, or `"unknown"` for unattributed records. |
 | `byUser[].externalUserId` | string \| null | Your system's user identifier, when resolvable. |
 | `byUser[].requestCount` | integer | Requests attributed to this user. |
-| `byUser[].feeWei` | string | Fees for this user in wei, as a base-10 decimal string. |
+| `byUser[].feeWei` | string | Network fees for this user in wei. |
+| `byPipelineModel` | array | Present only when `groupBy=pipeline_model`. Aggregated from validated `usage_billing_events`. |
+| `byPipelineModel[].pipeline` | string | Pipeline name (e.g. `text-to-image`). |
+| `byPipelineModel[].modelId` | string | Model identifier (e.g. `stabilityai/sdxl`). |
+| `byPipelineModel[].requestCount` | integer | Validated billing event count for this pipeline/model. |
+| `byPipelineModel[].networkFeeUsdMicros` | string | Network cost in USD micros. |
+| `byPipelineModel[].endUserBillableUsdMicros` | string \| null | Retail estimate (present when `include=retail` and the plan has rate cards). |
+| `byDailyPipeline` | array | Present only when `groupBy=daily_pipeline`. OpenMeter DAY window breakdowns (requires `userId`). |
 
 <Warning>
   `totalFeeWei` and `feeWei` are decimal strings, not numbers. They can exceed `Number.MAX_SAFE_INTEGER`. Always parse them with a BigInt-capable library (e.g. `BigInt(feeWei)` in JavaScript, `viem`'s `formatEther` for display).
@@ -110,7 +153,38 @@ All query parameters are optional.
 
 ### The `"unknown"` bucket
 
-Usage records without a resolvable `userId` are grouped under `endUserId: "unknown"` rather than silently dropped. This guarantees that `totals.totalFeeWei` always equals the sum of `byUser[].feeWei` (including the `"unknown"` bucket) when `groupBy=user` is requested.
+Usage records without a resolvable `userId` are grouped under `endUserId: "unknown"` rather than silently dropped. This guarantees that `totals.requestCount` always equals the sum of `byUser[].requestCount` (including the `"unknown"` bucket) when `groupBy=user` is requested.
+
+## Usage balance
+
+Check a user's remaining entitlement balance before allowing access:
+
+```http
+GET /api/v1/apps/{clientId}/usage/balance?externalUserId={externalUserId}
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Response:
+
+```json
+{
+  "balanceUsdMicros": "4200000",
+  "hasAccess": true,
+  "remainingUsdMicros": "4200000",
+  "consumedUsdMicros": "800000",
+  "lifetimeGrantedUsdMicros": "5000000"
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `balanceUsdMicros` | Current entitlement balance in USD micros from OpenMeter. |
+| `hasAccess` | `true` when the user has remaining balance from their active plan subscription. |
+| `remainingUsdMicros` | Remaining balance in USD micros. |
+| `consumedUsdMicros` | Consumed balance in USD micros this period. |
+| `lifetimeGrantedUsdMicros` | Total granted allowance (Starter + manual top-ups). |
+
+See [Allowances](/integration/allowances) for granting additional balance.
 
 ## Examples
 
@@ -137,6 +211,22 @@ curl -sS \
   "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?groupBy=user" | jq .
 ```
 
+### Pipeline/model breakdown
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?groupBy=pipeline_model" | jq .
+```
+
+### Pipeline/model breakdown with retail estimates
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?groupBy=pipeline_model&include=retail" | jq .
+```
+
 ### Month-to-date window
 
 ```bash
@@ -147,25 +237,20 @@ curl -sS \
 &endDate=2026-04-30T23:59:59.999Z" | jq .
 ```
 
-### Date window with per-user breakdown
+### Usage balance for a user
 
 ```bash
 curl -sS \
   -u "${M2M_ID}:${M2M_SECRET}" \
-  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage\
-?groupBy=user\
-&startDate=2026-04-01T00:00:00.000Z\
-&endDate=2026-04-30T23:59:59.999Z" | jq .
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage/balance?externalUserId=user-123" | jq .
 ```
 
-### Filter to a single user
+### Filter to a single gateway request
 
 ```bash
-export END_USER_ID="5d2b1234-uuid-..."   # endUserId from a prior groupBy=user response
-
 curl -sS \
   -u "${M2M_ID}:${M2M_SECRET}" \
-  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?userId=${END_USER_ID}" | jq .
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage?gatewayRequestId=job-abc123" | jq .
 ```
 
 ### Format wei as ETH in a shell script
@@ -176,8 +261,17 @@ RESPONSE=$(curl -sS \
   "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage")
 
 TOTAL_WEI=$(echo "${RESPONSE}" | jq -r '.totals.totalFeeWei')
-# Use node for BigInt arithmetic in shell
 node -e "const w = BigInt('${TOTAL_WEI}'); const eth = Number(w) / 1e18; console.log(eth.toFixed(6) + ' ETH')"
+```
+
+### SDK helper: usage by external user
+
+```ts
+import { summarizeUsageForExternalUser } from "@pymthouse/builder-sdk";
+
+const usage = await client.getUsage({ groupBy: "user", startDate, endDate });
+const summary = summarizeUsageForExternalUser(usage, "user-123");
+// summary.requestCount, summary.feeWei (wei string)
 ```
 
 ## Error responses
@@ -186,40 +280,28 @@ node -e "const w = BigInt('${TOTAL_WEI}'); const eth = Number(w) / 1e18; console
 | --- | --- |
 | `400 Bad Request` | `startDate` or `endDate` is not parseable by `Date.parse`. |
 | `404 Not Found` | No authenticated principal, credentials valid but for a different app, or `clientId` does not resolve to a known app. |
-
-## Data model reference
-
-The endpoint aggregates `usage_records` table rows:
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `request_id` | text | Upstream signer/request identifier; unique per client. |
-| `user_id` | text (nullable) | Internal `endUserId`; `null` for records not attributable to a user. |
-| `fee` | text | Fee in wei as a decimal string; summed into `totalFeeWei`. |
-| `created_at` | text | ISO 8601 timestamp; used for `startDate`/`endDate` filtering. |
+| `410 Gone` | `POST .../usage/signed-tickets` — synchronous HTTP ingest removed. Use Kafka + OpenMeter collector. |
 
 ## Security boundaries
 
 - Tenant isolation is enforced by matching the authenticated client's app to the path `clientId`. A valid credential for a different app returns `404`.
 - Provider sessions must be the app owner, a platform admin, or a recorded `providerAdmins` team member.
-- No secrets, signer material, per-request payloads, or customer PII are returned. The endpoint exposes aggregate counters and user-id correlation only.
+- No secrets, signer material, per-request payloads, or customer PII are returned.
 - Confidential client secrets must stay server-side. Do not call this endpoint from the browser with Basic auth.
 
 ## Key design decisions
 
-1. **`client_id` as the path tenant identifier.** Consistent with the Builder API, this avoids exposing internal database IDs and keeps the URL stable across credential rotations.
-2. **`404` for all auth and tenant-mismatch failures.** Collapsing `401`, `403`, and "wrong app" into `404` prevents enumeration of valid `client_id`s and keeps the security surface area small.
-3. **Fee totals as decimal strings.** Fees are wei-denominated and frequently exceed 2^53. Returning them as strings guarantees lossless JSON round-trips in every language that has a standard JSON parser.
-4. **Aggregation in application code, not SQL.** Sums and grouping are computed in the route handler using BigInt arithmetic, keeping the Drizzle query simple and the code portable. This is a reasonable trade-off until per-app row counts require SQL-level aggregation.
-5. **Per-user grouping is opt-in.** The default response is inexpensive and safe to poll; `groupBy=user` triggers an additional `app_users` query for `externalUserId` correlation and produces a larger payload. It is only executed when explicitly requested.
-6. **`userId` accepts the internal id, not `externalUserId`.** This keeps the filter a direct index lookup on `usage_records.user_id` without a join. Callers with only an `externalUserId` must resolve it first via a `groupBy=user` response.
-7. **Unattributed records surface under `"unknown"`.** Preferred over silently dropping them so that `totals.totalFeeWei` always equals the sum of `byUser[].feeWei`.
+1. **OpenMeter-authoritative.** All usage reads come from OpenMeter meters (`network_fee_usd_micros`, `signed_ticket_count`). The `"source": "openmeter"` field is always present. Allowance balance reads use OpenMeter entitlement APIs, never Postgres.
+2. **`pipeline_model` grouping from billing events.** The `groupBy=pipeline_model` dimension aggregates from validated `usage_billing_events` rows — records that have a full `pipeline` + `modelId` constraint from the gateway payment envelope. Records without this constraint appear only in `totals`.
+3. **Async metering.** Signing hot-path performance is not impacted by metering writes. go-livepeer emits events to Kafka; the OpenMeter collector ingests them asynchronously.
+4. **`404` for all auth and tenant-mismatch failures.** Collapsing `401`, `403`, and "wrong app" into `404` prevents enumeration of valid `client_id`s.
+5. **Retail estimates are opt-in.** `include=retail` triggers retail rate computation from the active plan's rate cards. Authoritative invoicing remains OpenMeter after plan sync.
 
 ## Implementation tasks
 
-- Parse `totalFeeWei` and `feeWei` with `BigInt` before any arithmetic. Do not cast to `Number` before comparing or summing values.
+- Parse `totalFeeWei` and `feeWei` with `BigInt` before any arithmetic.
 - When displaying fees in your dashboard, convert from wei using a safe formatter (e.g. `viem`'s `formatEther`).
-- For reconciliation workflows, always supply explicit `startDate`/`endDate` bounds. Omitting bounds returns all-time usage, which grows unboundedly over the app's lifetime.
-- Populate `usage_records.user_id` at write time whenever a request is attributable to a provisioned `app_users` row. Records written without a `user_id` end up in the `"unknown"` bucket and cannot be retroactively attributed.
-- For high-volume apps, prefer `groupBy=user` with a bounded date window. The handler aggregates all matching rows in memory; unbounded all-time queries with `groupBy=user` will become slow as row counts grow.
-- Rotate M2M client secrets periodically via the credentials endpoint. Basic auth to the Usage API uses the same credentials as the Builder API.
+- For reconciliation workflows, always supply explicit `startDate`/`endDate` bounds.
+- Use `groupBy=pipeline_model` to build per-pipeline attribution dashboards. Only requests with full `pipeline` + `modelId` constraints appear in this dimension.
+- Check `getUsageBalance()` (or `GET .../usage/balance`) before allowing user actions that consume entitlement.
+- Rotate M2M client secrets periodically via the credentials endpoint.

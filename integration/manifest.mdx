@@ -1,0 +1,168 @@
+---
+title: App manifest
+description: Read and update your app's network capability manifest — the set of pipeline/model combinations discoverable through PymtHouse. Supports ETag caching and SDK helpers.
+---
+
+The **app manifest** defines which pipeline/model combinations are discoverable for your app through the PymtHouse network. It is expressed as a **subtractive** allowlist: the full NaaP pipeline catalog minus any `excludedCapabilities` you configure is what integrators and end-users can discover.
+
+<Note>
+  **`GET .../manifest` behavior change:** The GET endpoint currently returns a **fail-open stub** (`capabilities: []`, `excludedCapabilities: []`, `manifestVersion: "empty"`) rather than the fully-resolved capability list. `PUT .../manifest` still resolves and returns the full manifest after writing exclusions. The manifest is not enforced on the signing hot path — direct DMZ signing does not consult it.
+</Note>
+
+## Endpoints
+
+```http
+GET  /api/v1/apps/{clientId}/manifest
+PUT  /api/v1/apps/{clientId}/manifest
+```
+
+### Authentication
+
+| Method | Auth |
+| --- | --- |
+| `GET` | M2M Basic auth or provider dashboard session |
+| `PUT` | Provider dashboard session with edit rights |
+
+---
+
+## GET manifest
+
+```http
+GET /api/v1/apps/{clientId}/manifest
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Currently returns a **fail-open stub**. The signing hot path does not enforce capability restrictions; when the enforcement cache was removed, the GET stub was introduced to avoid breaking integrators that depend on the empty-capabilities signal:
+
+```json
+{
+  "capabilities": [],
+  "excludedCapabilities": [],
+  "manifestVersion": "empty"
+}
+```
+
+### ETag caching
+
+The GET endpoint supports conditional requests via `If-None-Match`:
+
+```http
+GET /api/v1/apps/{clientId}/manifest
+If-None-Match: "a1b2c3d4e5f6..."
+```
+
+When the manifest has not changed, the server returns `304 Not Modified` with no body. Cache the `ETag` from the response header and send it on subsequent requests to avoid re-downloading an unchanged manifest.
+
+```bash
+# First fetch — capture ETag
+ETAG=$(curl -sS -i \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/manifest" \
+  | grep -i etag | awk '{print $2}' | tr -d '\r')
+
+# Conditional fetch
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  -H "If-None-Match: ${ETAG}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/manifest"
+# Returns 304 if unchanged
+```
+
+SDK:
+
+```ts
+import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+
+const client = createPmtHouseClientFromEnv();
+
+// First fetch
+const { manifest, etag } = await client.getAppManifest();
+
+// Conditional fetch
+const result = await client.getAppManifest({ ifNoneMatch: etag });
+if (result.notModified) {
+  // Use cached manifest
+}
+```
+
+---
+
+## PUT manifest (update exclusions)
+
+Update the `excludedCapabilities` on the app's Network Price plan. The response re-resolves the full manifest after writing:
+
+```http
+PUT /api/v1/apps/{clientId}/manifest
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "excludedCapabilities": [
+    { "pipeline": "text-to-image", "modelId": "*" },
+    { "pipeline": "audio-to-text", "modelId": "openai/whisper-large-v3" }
+  ]
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `excludedCapabilities` | Array of `{ pipeline, modelId }` objects to exclude from discovery. `modelId: "*"` removes all models for that pipeline. An empty array clears all exclusions (full catalog discoverable). |
+
+Response mirrors the `GET` shape: `{ capabilities, excludedCapabilities, manifestVersion }` with the re-resolved list.
+
+**Returns `409 Conflict`** if the new exclusions would hide pipeline/models that a custom billing plan still has capability bundles for. Remove the conflicting capability bundles from the plan first, or relax the exclusions.
+
+```bash
+export SESSION_COOKIE="next-auth.session-token=..."
+
+curl -sS -X PUT \
+  -b "${SESSION_COOKIE}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "excludedCapabilities": [
+      { "pipeline": "text-to-image", "modelId": "*" }
+    ]
+  }' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/manifest"
+```
+
+---
+
+## Manifest version
+
+The `manifestVersion` field is a SHA-256 prefix (24 hex characters) over the sorted `capabilities` and `excludedCapabilities`. Use it for cache-busting and change detection — if the version matches your cached value, no downstream update is needed.
+
+SDK helper:
+
+```ts
+import {
+  parseAppManifestResponse,
+  computeManifestRevision,
+} from "@pymthouse/builder-sdk";
+
+const parsed = parseAppManifestResponse(rawManifestJson);
+const revision = computeManifestRevision(parsed);
+```
+
+---
+
+## Fail-open behavior
+
+- **`capabilities: []`** → no restriction. An empty capabilities list means the full catalog is discoverable (fail-open). Integrators must not interpret an empty array as "nothing allowed".
+- **`503 Service Unavailable`** → returned when the NaaP pipeline catalog cannot be loaded on the server side (only during `PUT`, which needs to validate and resolve exclusions).
+
+---
+
+## Key design decisions
+
+1. **Fail-open stub on GET.** The in-process enforcement cache was removed because it failed closed on replicas or after restarts, rejecting otherwise-valid signing requests. The signing hot path no longer consults the manifest; capability scoping is expressed through exclusions in the dashboard and surfaced via the manifest API for informational/discovery purposes only.
+2. **Subtractive exclusion model.** Starting from the full NaaP catalog and subtracting exclusions makes it safe to add new pipelines/models to the catalog without requiring integrators to update an allowlist.
+3. **Conflict guard on PUT.** Preventing exclusions that would hide capabilities still referenced by billing plans keeps the billing and discovery configuration consistent.
+
+## Related guides
+
+- [Plans](/integration/plans) — custom billing plans reference manifest capabilities
+- [Builder SDK](/integration/sdk) — `getAppManifest`, `parseAppManifestResponse`, `computeManifestRevision`

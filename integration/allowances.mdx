@@ -1,0 +1,230 @@
+---
+title: Allowances
+description: Manage per-user USD micro entitlement balances. Read allowance detail, grant manual top-ups, and check real-time access via the OpenMeter-backed allowances and balance APIs.
+---
+
+PymtHouse tracks per-user usage entitlements as **allowances** — USD micro balances backed by OpenMeter subscriptions and grants. Every new user starts with a Starter plan allowance; providers can add manual top-ups on top of the subscription balance.
+
+All allowance amounts are expressed as **USD micros** (integer strings; `1000000` = $1.00).
+
+<Note>
+  Allowance storage is **OpenMeter-backed**, not a Postgres wei ledger. Reads use OpenMeter entitlement APIs; grants call OpenMeter `createGrant`. `OPENMETER_URL` must be configured. The deprecated `credits` alias redirects to these endpoints — use `/allowances` for new integrations.
+</Note>
+
+## Authentication
+
+All allowance endpoints use **M2M HTTP Basic auth**:
+
+```http
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+The authenticated client's app must match the `clientId` in the path. Mismatches return `404`.
+
+---
+
+## Read allowances
+
+```http
+GET /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Returns the user's allowance breakdown: balance consumed, remaining, and all active grants.
+
+```bash
+export BASE_URL="https://your-pymthouse.example"
+export CLIENT_ID="app_yourClientId"
+export M2M_ID="m2m_yourClientId"
+export M2M_SECRET="pmth_cs_yourSecret"
+
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/users/user-123/allowances" | jq .
+```
+
+Response:
+
+```json
+{
+  "externalUserId": "user-123",
+  "balanceUsdMicros": "4200000",
+  "consumedUsdMicros": "800000",
+  "lifetimeGrantedUsdMicros": "5000000",
+  "grants": [
+    {
+      "id": "grant-uuid",
+      "amountUsdMicros": "5000000",
+      "source": "plan_adjustment",
+      "createdAt": "2026-04-01T00:00:00.000Z",
+      "featureKey": null
+    }
+  ]
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `balanceUsdMicros` | Current remaining entitlement in USD micros. |
+| `consumedUsdMicros` | Consumed allowance in USD micros this period. |
+| `lifetimeGrantedUsdMicros` | Total lifetime granted allowance (Starter + manual top-ups). |
+| `grants` | List of active grants with source and amount. |
+| `grants[].source` | One of `trial`, `manual`, `promo`, `plan_adjustment`. |
+| `grants[].featureKey` | Optional OpenMeter feature key for the grant. |
+
+SDK:
+
+```ts
+const allowances = await client.getUserAllowances("user-123");
+```
+
+---
+
+## Grant a manual top-up
+
+Add additional USD micro balance on top of the user's existing subscription allowance:
+
+```http
+POST /api/v1/apps/{clientId}/users/{externalUserId}/allowances
+Authorization: Basic base64(m2m_id:m2m_secret)
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "amountUsdMicros": "5000000",
+  "source": "manual",
+  "featureKey": null
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `amountUsdMicros` | Yes | Amount to grant in USD micros (e.g. `5000000` = $5.00). String integer. |
+| `source` | No | `"manual"` (default), `"trial"`, `"promo"`, or `"plan_adjustment"`. |
+| `featureKey` | No | Optional OpenMeter feature key to scope the grant. `null` for general balance. |
+
+Grants are **additive** on top of the Starter subscription's included usage — they do not replace it.
+
+```bash
+curl -sS -X POST \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  -H "Content-Type: application/json" \
+  -d '{"amountUsdMicros":"5000000","source":"manual"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/users/user-123/allowances"
+```
+
+SDK:
+
+```ts
+await client.grantUserAllowance("user-123", {
+  amountUsdMicros: "5000000",
+  source: "manual",
+});
+```
+
+---
+
+## Check real-time access balance
+
+For a lightweight gate check before allowing a user action that consumes entitlement:
+
+```http
+GET /api/v1/apps/{clientId}/usage/balance?externalUserId={externalUserId}
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+Response:
+
+```json
+{
+  "balanceUsdMicros": "4200000",
+  "hasAccess": true,
+  "remainingUsdMicros": "4200000",
+  "consumedUsdMicros": "800000",
+  "lifetimeGrantedUsdMicros": "5000000"
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `hasAccess` | `true` when the user has remaining balance from their active plan subscription. Gate signing requests on this field. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance. |
+| `remainingUsdMicros` | Remaining balance (may differ from `balanceUsdMicros` after in-flight consumption). |
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/usage/balance?externalUserId=user-123" | jq .
+```
+
+SDK:
+
+```ts
+const balance = await client.getUsageBalance("user-123");
+if (!balance.hasAccess) {
+  throw new Error("User has insufficient balance");
+}
+```
+
+---
+
+## Starter plan entitlement
+
+Every app has a **Starter** plan with a default `includedUsdMicros` allowance (typically `5000000` = $5.00). New users are automatically subscribed to the Starter plan when provisioned, and the Starter allowance is the baseline grant for every new user.
+
+Providers update the Starter allowance via:
+
+```http
+PUT /api/v1/apps/{clientId}/starter-plan
+Content-Type: application/json
+
+{ "includedUsdMicros": "10000000" }
+```
+
+This triggers an immediate OpenMeter plan sync. See [Plans](/integration/plans) for more on the Starter plan structure.
+
+---
+
+## User subscription status
+
+Read the full OpenMeter subscription state for a user (plan, period, status):
+
+```http
+GET /api/v1/apps/{clientId}/users/{externalUserId}/subscription
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+SDK:
+
+```ts
+const subscription = await client.getUserSubscription("user-123");
+```
+
+---
+
+## Error responses
+
+| Status | Condition |
+| --- | --- |
+| `404 Not Found` | `clientId` path mismatch, or `externalUserId` not found. |
+| `422 Unprocessable Entity` | `amountUsdMicros` is not a valid positive integer string. |
+| `503 Service Unavailable` | OpenMeter is unreachable (`OPENMETER_URL` misconfigured or service down). |
+
+---
+
+## Key design decisions
+
+1. **OpenMeter-authoritative.** Allowance balances are never stored in Postgres. All reads and grants go through OpenMeter entitlement APIs, keeping the billing source of truth consistent with metering.
+2. **Additive grants.** `POST /allowances` calls OpenMeter `createGrant` on top of the existing Starter subscription — it does not replace or reset the subscription's included usage.
+3. **Separate `balance` endpoint.** `GET .../usage/balance` is a lightweight gate check that returns only `hasAccess` and balance totals, suitable for pre-request checks without pulling full allowance detail.
+
+## Implementation tasks
+
+- Call `getUsageBalance()` (or `GET .../usage/balance`) before dispatching signed requests to check `hasAccess`.
+- Use `grantUserAllowance()` (or `POST .../allowances`) with `source: "manual"` for one-time top-ups (e.g. support credits, promotional credits).
+- Use `source: "promo"` or `source: "trial"` for time-limited promotional grants when your billing flow distinguishes them.
+- Poll `GET /allowances` for the full grant history when building a user billing detail view.
+- Do not use the deprecated `credits` alias (`POST .../credits`) in new code — it may be removed in a future release.

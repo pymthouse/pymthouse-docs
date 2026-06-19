@@ -1,13 +1,15 @@
 ---
 title: Plans
-description: List, create, update, and delete billing plans for your app. Plans define included units, overage rates, and capability bundles.
+description: List, create, update, sync, and delete billing plans for your app. Plans define included allowances, overage rates, capability bundles, and OpenMeter sync state.
 ---
 
-Plans define pricing tiers for your app. The active plan and subscription window drive overage in the [billing summary](/integration/billing).
+Plans define pricing tiers for your app. The active plan and subscription window drive overage in the [billing summary](/integration/billing). Published plans are synced to OpenMeter, which handles authoritative usage metering and retail rate cards.
 
 ## Authentication
 
-Plan routes use **`getAuthorizedProviderApp`** only: a **logged-in provider dashboard** session whose user is the app owner, a platform admin, or a `providerAdmins` team member. **Confidential M2M / Basic auth is not accepted** on `/plans` (unlike [billing summary](/integration/billing) and the Usage API in [`pymthouse` `docs/builder-api.md`](https://github.com/eliteprox/pymthouse/blob/main/docs/builder-api.md)).
+Plan routes use **provider dashboard session** auth only: a logged-in session whose user is the app owner, a platform admin, or a `providerAdmins` team member. **Confidential M2M / Basic auth is not accepted** on plan mutation routes.
+
+`GET /plans` also accepts M2M Basic auth for integrators who need to read plan configuration.
 
 **POST**, **PUT**, and **DELETE** additionally require **`canEditProviderApp`** (same session, with edit rights).
 
@@ -29,9 +31,59 @@ GET /api/v1/apps/{clientId}/plans
 
 Returns every plan for the app, each with nested **capabilities** (pipeline/model bundles).
 
-### Response shape
+### Query parameters
 
-Each plan includes: `id`, `clientId`, `name`, `type` (`free` | `subscription` | `usage`), `priceAmount`, `priceCurrency`, `status`, `includedUnits` and `overageRateWei` as strings or `null`, and `capabilities` (array).
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `apiVersion` | `2` | When `2`, returns plans as `BillingProduct` DTOs with additional sync metadata (see below). |
+
+### Default response shape (no `apiVersion`)
+
+Each plan includes: `id`, `clientId`, `name`, `type` (`free` | `subscription` | `usage`), `priceAmount`, `priceCurrency`, `status`, `isNetworkDefault`, `isStarterDefault`, `includedUnits`, `includedUsdMicros`, `overageRateWei`, `billingCycle`, `openmeterPlanId`, `lastSyncedAt`, `syncError`, and `capabilities` (array).
+
+### Billing API v2 response (`apiVersion=2`)
+
+Returns `{ apiVersion: 2, products: [BillingProduct…] }`.
+
+```json
+{
+  "apiVersion": 2,
+  "products": [
+    {
+      "id": "plan-uuid",
+      "name": "Pro",
+      "type": "subscription",
+      "status": "active",
+      "includedUsdMicros": "10000000",
+      "overageRateUsd": "0.0000015",
+      "billingCycle": "monthly",
+      "openmeterPlanId": "om_plan_...",
+      "lastSyncedAt": "2026-04-01T00:00:00.000Z",
+      "syncError": null,
+      "sync": {
+        "status": "synced",
+        "syncedAt": "2026-04-01T00:00:00.000Z"
+      },
+      "capabilities": [
+        {
+          "pipeline": "text-to-image",
+          "modelId": "stabilityai/sdxl",
+          "effectiveRetailRateUsd": "0.0000020"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `includedUsdMicros` | Subscription usage allowance in USD micros (e.g. `10000000` = $10.00). |
+| `overageRateUsd` | Plan-level retail USD per network USD-micro (decimal string, e.g. `0.0000015` = 50% markup). Synced to OpenMeter usage rate cards. |
+| `openmeterPlanId` | OpenMeter plan key; `null` until first sync. |
+| `lastSyncedAt` | ISO 8601 timestamp of last successful OpenMeter sync. |
+| `syncError` | Last sync error string, or `null` if sync succeeded. |
+| `capabilities[].effectiveRetailRateUsd` | Per pipeline/model retail override (decimal USD per micro). |
 
 ---
 
@@ -44,13 +96,20 @@ Content-Type: application/json
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `name` | Yes | Display name. |
+| `name` | Yes | Display name. Reserved names (`Network Price` and the internal default) are rejected. |
 | `type` | No | Defaults to `free`. `subscription` requires `includedUnits` and `overageRateWei` (non-negative integer strings). |
+| `includedUsdMicros` | No | USD micros allowance for OpenMeter subscription entitlement. |
+| `overageRateUsd` | No | Retail USD rate per USD micro for OpenMeter rate cards. |
 | `priceAmount`, `priceCurrency` | No | Defaults `0` / `USD`. |
-| `status` | No | `active` or `inactive`; default `active`. |
-| `capabilities` | No | Array of `{ pipeline, modelId, slaTargetScore?, slaTargetP95Ms?, maxPricePerUnit? }`. |
+| `billingCycle` | No | `"monthly"` (default). |
+| `status` | No | `active` or `inactive`; default `active`. Publishing with `status: active` triggers OpenMeter sync when `OPENMETER_URL` is configured. |
+| `capabilities` | No | Array of `{ pipeline, modelId, slaTargetScore?, slaTargetP95Ms?, maxPricePerUnit?, retailRateUsd? }`. Each entry must reference discoverable (non-excluded) pipeline/model combinations. |
 
 **201 Created** body: `{ "id": "<new-plan-uuid>" }`.
+
+<Note>
+  `is_network_default` cannot be set on custom plans. The Network Price plan (the discovery/manifest plan) is managed separately via `PUT .../manifest`.
+</Note>
 
 ---
 
@@ -61,7 +120,7 @@ PUT /api/v1/apps/{clientId}/plans
 Content-Type: application/json
 ```
 
-Body must include **`id`** (plan UUID). Omitted fields keep existing values. If **`capabilities`** is present, it **replaces** all bundles for that plan; omit the key to leave bundles unchanged.
+Body must include **`id`** (plan UUID). Omitted fields keep existing values. If **`capabilities`** is present, it **replaces** all bundles for that plan; omit the key to leave bundles unchanged. `PUT` on the Network Price plan id returns `400` — edit exclusions via `PUT .../manifest` or the Plans UI.
 
 **200 OK**: `{ "success": true }`.
 
@@ -73,9 +132,40 @@ Body must include **`id`** (plan UUID). Omitted fields keep existing values. If 
 DELETE /api/v1/apps/{clientId}/plans?planId=<uuid>
 ```
 
-Removes the plan and its capability bundles. Prefer **`status: inactive`** via PUT if subscribers might still reference the plan.
+Removes the plan and its capability bundles. Prefer **`status: inactive`** via PUT if subscribers might still reference the plan. Deleting the Network Price default plan returns `409`.
 
 **200 OK**: `{ "success": true }`. **404** if the plan is missing or not owned by this app.
+
+---
+
+## Sync a plan to OpenMeter
+
+```http
+POST /api/v1/apps/{clientId}/plans/{planId}/sync
+```
+
+Auth: provider dashboard session with edit rights.
+
+Triggers an explicit OpenMeter plan sync for the specified plan. Use this when a plan's rate cards or included allowance have drifted from OpenMeter, or after changing pricing configuration outside the normal publish flow.
+
+**200 OK**: `{ "success": true, "openmeterPlanId": "om_plan_...", "syncedAt": "..." }`.
+
+---
+
+## Starter plan
+
+Every app has a **Starter** plan (`isStarterDefault: true`) separate from custom billing plans. It carries an `includedUsdMicros` allowance and is automatically subscribed to by new end-users.
+
+Providers update the Starter allowance separately from the plans list:
+
+```http
+GET  /api/v1/apps/{clientId}/starter-plan
+PUT  /api/v1/apps/{clientId}/starter-plan
+```
+
+`PUT` body: `{ "includedUsdMicros": "5000000" }`. This triggers an immediate OpenMeter plan sync.
+
+The Starter plan also appears in the `GET /plans` list (with `isStarterDefault: true`) but cannot be deleted or replaced by a custom plan.
 
 ---
 
@@ -83,32 +173,62 @@ Removes the plan and its capability bundles. Prefer **`status: inactive`** via P
 
 | Status | Typical cause |
 | --- | --- |
-| `400` | Missing `name`, invalid `subscription` billing fields, malformed `capabilities`. |
+| `400` | Missing `name`, invalid `subscription` billing fields, malformed `capabilities`, or attempting to `PUT` the Network Price plan. |
 | `403` | Session cannot edit this app. |
 | `404` | Unknown `clientId` or plan id. |
+| `409` | Attempting to delete the Network Price default plan, or exclusion conflicts with existing capability bundles. |
+
+---
+
+## OpenMeter sync behavior
+
+When a plan is published with `status: active` and `OPENMETER_URL` is configured:
+
+1. A plan keyed `{clientId}:{planId}` is created or updated in OpenMeter.
+2. Flat subscription fee, included allowance on `network_fee_usd_micros`, and usage rate cards are provisioned.
+3. Per-capability `retailRateUsd` entries create filtered OpenMeter features and rate cards.
+4. Stale `openmeterPlanId` values are recreated automatically when OpenMeter returns plan-not-found.
+
+Stripe Connect is for invoicing/checkout, not for provisioning plans in OpenMeter.
 
 ---
 
 ## Examples
 
-Call **GET/POST/PUT/DELETE** from a **trusted context** that has the provider dashboard session (browser on the PymtHouse console, or server-side with the user’s session cookie). Example with session cookie:
+Call **GET/POST/PUT/DELETE** from a **trusted context** that holds the provider dashboard session cookie.
 
 ```bash
 export BASE_URL="https://your-pymthouse.example"
 export CLIENT_ID="app_yourClientId"
 export SESSION_COOKIE="next-auth.session-token=..."
 
+# List plans (default)
 curl -sS -b "${SESSION_COOKIE}" \
   "${BASE_URL}/api/v1/apps/${CLIENT_ID}/plans" | jq .
 
+# List plans (billing v2)
+curl -sS -b "${SESSION_COOKIE}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/plans?apiVersion=2" | jq .
+
+# Create a free plan
 curl -sS -X POST -b "${SESSION_COOKIE}" \
   -H "Content-Type: application/json" \
   -d '{"name":"Free","type":"free"}' \
   "${BASE_URL}/api/v1/apps/${CLIENT_ID}/plans"
+
+# Sync a plan to OpenMeter
+curl -sS -X POST -b "${SESSION_COOKIE}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/plans/<plan-uuid>/sync"
+
+# Update Starter plan allowance
+curl -sS -X PUT -b "${SESSION_COOKIE}" \
+  -H "Content-Type: application/json" \
+  -d '{"includedUsdMicros":"10000000"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/starter-plan"
 ```
 
-Do not expose plan mutation to end users; keep cookies server-side or use the in-app UI.
+Do not expose plan mutation to end users; keep session cookies server-side or use the in-app UI.
 
 ## Implementation reference
 
-Canonical contract: [`pymthouse` `docs/builder-api.md`](https://github.com/eliteprox/pymthouse/blob/main/docs/builder-api.md) (Billing API → Plans). Code: `src/app/api/v1/apps/[id]/plans/route.ts`.
+Canonical contract: [`pymthouse` `docs/builder-api.md`](https://github.com/pymthouse/pymthouse/blob/main/docs/builder-api.md) (Billing API → Plans). Code: `src/app/api/v1/apps/[id]/plans/route.ts`, `src/app/api/v1/apps/[id]/plans/[planId]/sync/route.ts`, `src/app/api/v1/apps/[id]/starter-plan/route.ts`.
