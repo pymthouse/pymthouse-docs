@@ -8,7 +8,7 @@ PymtHouse tracks per-user usage entitlements as **allowances** — USD micro bal
 All allowance amounts are expressed as **USD micros** (integer strings; `1000000` = $1.00).
 
 <Note>
-  Allowance storage is **OpenMeter-backed**, not a Postgres wei ledger. Reads use OpenMeter entitlement APIs; grants call OpenMeter `createGrant`. `OPENMETER_URL` must be configured. The deprecated `credits` alias redirects to these endpoints — use `/allowances` for new integrations.
+  Allowance storage is **OpenMeter-backed**, not a Postgres wei ledger. Reads use OpenMeter entitlement APIs; grants call OpenMeter `createGrant`. `OPENMETER_URL` must be configured.
 </Note>
 
 ## Authentication
@@ -227,4 +227,3 @@ const subscription = await client.getUserSubscription("user-123");
 - Use `grantUserAllowance()` (or `POST .../allowances`) with `source: "manual"` for one-time top-ups (e.g. support credits, promotional credits).
 - Use `source: "promo"` or `source: "trial"` for time-limited promotional grants when your billing flow distinguishes them.
 - Poll `GET /allowances` for the full grant history when building a user billing detail view.
-- Do not use the deprecated `credits` alias (`POST .../credits`) in new code — it may be removed in a future release.

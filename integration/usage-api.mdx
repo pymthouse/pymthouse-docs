@@ -7,10 +7,6 @@ The Usage API is a read-only endpoint that exposes aggregated usage data for a d
 
 All monetary values are expressed in **wei** as decimal strings, with USD micro equivalents available via `include=retail`.
 
-<Note>
-  Synchronous HTTP signed-ticket ingest (`POST .../usage/signed-tickets`) is removed and returns **`410 Gone`**. Production metering is asynchronous: go-livepeer emits `create_signed_ticket` events to Kafka, which the OpenMeter collector consumes. See [Deprecated routes](/integration/deprecated) for migration details.
-</Note>
-
 ## Authentication
 
 Two auth modes are accepted. The tenant boundary is enforced identically in both: the `clientId` in the URL path must match the authenticated principal's app.
@@ -280,7 +276,6 @@ const summary = summarizeUsageForExternalUser(usage, "user-123");
 | --- | --- |
 | `400 Bad Request` | `startDate` or `endDate` is not parseable by `Date.parse`. |
 | `404 Not Found` | No authenticated principal, credentials valid but for a different app, or `clientId` does not resolve to a known app. |
-| `410 Gone` | `POST .../usage/signed-tickets` — synchronous HTTP ingest removed. Use Kafka + OpenMeter collector. |
 
 ## Security boundaries
 

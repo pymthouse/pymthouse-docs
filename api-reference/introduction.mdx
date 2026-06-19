@@ -3,7 +3,7 @@ title: API reference
 description: How the PymtHouse HTTP APIs and OIDC surface fit together, and where to find endpoint-level documentation.
 ---
 
-PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder and billing APIs** under a single base URL. This tab collects **procedural guides** and machine-readable **OpenAPI** definitions where they exist; the live **authorization, token, and user-management** paths are also listed in your tenant’s [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document so your client always tracks endpoint rotations.
+PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder and billing APIs** under a single base URL. This tab will collect machine-readable **OpenAPI** definitions as they become available; the live **authorization, token, and user-management** paths are also listed in your tenant's [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document so your client always tracks endpoint rotations.
 
 ## Base URL and discovery
 
@@ -12,15 +12,15 @@ PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder 
 
 Always resolve OAuth and OIDC URLs from discovery in production. Hard-coded paths are brittle when routes or hostnames change.
 
-## What lives in “API reference” vs “Builder guides”
+## Where to find endpoint documentation
+
+All endpoint guides currently live in the **Builder guides** tab:
 
 | Need | Go to |
 | --- | --- |
 | End-to-end auth flows, PKCE, device code, token exchange | [Builder guides](/quickstart) tab |
-| **Usage API** (aggregated usage, billing analytics) | [Usage API](/integration/usage-api) in this tab |
+| **Usage API** (aggregated usage, billing analytics) | [Usage API](/integration/usage-api) in Builder guides |
 | User management, app tokens, billing endpoints | [Builder guides](/integration/user-management) and related pages in that tab |
-
-The Builder guides tab holds **narrative, flow-oriented** documentation. This tab is the right place for **request shapes, query parameters, and error semantics** once you already know *which* API you are calling.
 
 ## Next steps
 

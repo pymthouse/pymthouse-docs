@@ -153,6 +153,27 @@ SDK:
 
 ---
 
+## App manifest routes deprecated
+
+**Affected routes:**
+
+| Route | Status |
+| --- | --- |
+| `GET /api/v1/apps/{clientId}/manifest` | Deprecated — returns fail-open stub only |
+| `PUT /api/v1/apps/{clientId}/manifest` | Deprecated |
+
+The manifest API was used to configure discoverable pipeline/model combinations (subtractive exclusions). The signing hot path no longer enforces capability restrictions; `GET .../manifest` returns a fail-open stub (`capabilities: []`) rather than a resolved list. Manage capability exclusions through the **Plans UI** instead.
+
+**SDK methods deprecated:**
+
+| Method | Replacement |
+| --- | --- |
+| `getAppManifest({ ifNoneMatch? })` | Plans UI |
+| `parseAppManifestResponse(raw)` | N/A |
+| `computeManifestRevision(parsed)` | N/A |
+
+---
+
 ## Deprecated discovery profiles
 
 **Affected routes:**
@@ -162,7 +183,7 @@ SDK:
 | `GET/POST .../discovery-profiles` | Legacy — still functional, not removed |
 | `GET/PUT/DELETE .../discovery-profiles/{id}` | Legacy — still functional, not removed |
 
-Discovery profiles are a legacy mechanism for expressing pipeline/model capability sets on plans. They remain functional for backward compatibility but new integrations should use `GET/PUT .../manifest` for network capability management.
+Discovery profiles are a legacy mechanism for expressing pipeline/model capability sets on plans. They remain functional for backward compatibility but new integrations should use the **Plans UI** for network capability management.
 
 ---
 
@@ -173,7 +194,7 @@ Discovery profiles are a legacy mechanism for expressing pipeline/model capabili
 | `POST /api/signer/generate-live-payment` | `410 Gone` | `createDirectSignerProxyHandler` + DMZ |
 | `POST /api/signer/sign-orchestrator-info` | `410 Gone` | Direct DMZ |
 | `POST /api/signer/sign-byoc-job` | `410 Gone` | Direct DMZ |
-| `GET /api/signer/discover-orchestrators` | `410 Gone` | `GET .../manifest` |
+| `GET /api/signer/discover-orchestrators` | `410 Gone` | Plans UI |
 | `POST .../usage/signed-tickets` | `410 Gone` | Kafka async metering (no replacement) |
 | `POST /api/v1/subscriptions` | `410 Gone` | Plans CRUD + checkout |
 | `DELETE /api/v1/subscriptions` | `410 Gone` | Plans CRUD |
@@ -182,3 +203,6 @@ Discovery profiles are a legacy mechanism for expressing pipeline/model capabili
 | `getUserCredits()` SDK method | Deprecated | `getUserAllowances()` |
 | `grantUserCredits()` SDK method | Deprecated | `grantUserAllowance()` |
 | `ingestSignedTicket()` SDK method | Legacy | No direct replacement (Kafka handles metering) |
+| `GET .../manifest` | Deprecated | Plans UI |
+| `PUT .../manifest` | Deprecated | Plans UI |
+| `getAppManifest()` SDK method | Deprecated | Plans UI |
