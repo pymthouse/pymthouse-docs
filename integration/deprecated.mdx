@@ -1,9 +1,99 @@
 ---
 title: Deprecated routes and migrations
-description: Migration guide for removed endpoints. The hosted signer proxy, synchronous signed-ticket ingest, and legacy subscription and credits endpoints have been replaced.
+description: Migration guide for removed endpoints. The hosted signer proxy, synchronous signed-ticket ingest, legacy subscription, credits, and auth/validate (GET) endpoints have been replaced.
 ---
 
-This page documents endpoints that have been **removed** (returning `410 Gone`) or **deprecated** in PymtHouse v0.2.x. Follow the migration steps to update your integration.
+This page documents endpoints that have been **removed** (returning `410 Gone` or `400 invalid_request`) or **deprecated** in PymtHouse v0.2.x. Follow the migration steps to update your integration.
+
+---
+
+## `GET /api/v1/auth/validate` removed
+
+**Affected route:**
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `GET /api/v1/auth/validate` | Removed | `POST /api/v1/auth/validate` with `{ "key": "pmth_…" }` |
+
+### Why it was removed
+
+The `GET` form passed the API key in the `Authorization: Bearer` header, which made key validation semantically identical to a Bearer-authenticated request — with no request body for the key being validated. The `POST` form provides an explicit validation surface compatible with the BPP v2 validate shape.
+
+### Migration
+
+Replace `GET /api/v1/auth/validate` with a `POST` and move the key into the JSON body:
+
+```diff
+- GET /api/v1/auth/validate
+- Authorization: Bearer pmth_…
+
++ POST /api/v1/auth/validate
++ Content-Type: application/json
++
++ { "key": "pmth_…" }
+```
+
+The response shape (`{ valid, planId, capabilities }`) is unchanged. Enable `BPP_VALIDATE_V2=1` on your deployment to activate the `POST` route.
+
+---
+
+## App-level keys removed (`/api/v1/apps/{clientId}/keys`)
+
+**Affected routes:**
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `GET /api/v1/apps/{clientId}/keys` | Removed | `GET .../users/{externalUserId}/keys` |
+| `POST /api/v1/apps/{clientId}/keys` | Removed | `POST .../users/{externalUserId}/keys` |
+| `DELETE /api/v1/apps/{clientId}/keys` | Removed | `DELETE .../users/{externalUserId}/keys?keyId=` |
+
+### Why it was removed
+
+App-level keys were tied to subscriptions rather than to individual users, making revocation coarse-grained and attribution impossible. Per-user keys (`/users/{externalUserId}/keys`) carry user identity through to the DMZ webhook and support fine-grained revocation.
+
+### Migration
+
+Issue and manage API keys through the per-user endpoints:
+
+```diff
+- POST /api/v1/apps/{clientId}/keys
++ POST /api/v1/apps/{clientId}/users/{externalUserId}/keys
+
+- GET  /api/v1/apps/{clientId}/keys
++ GET  /api/v1/apps/{clientId}/users/{externalUserId}/keys
+
+- DELETE /api/v1/apps/{clientId}/keys
++ DELETE /api/v1/apps/{clientId}/users/{externalUserId}/keys?keyId=<keyId>
+```
+
+See [API keys](/integration/api-keys) for the full per-user key lifecycle.
+
+---
+
+## Dashboard BFF key exchange removed (`POST /api/pymthouse/keys/exchange`)
+
+**Affected route:**
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `POST /api/pymthouse/keys/exchange` | Removed (external BFF route) | `POST /api/v1/apps/{clientId}/auth/api-key/signer-session` |
+
+### Why it was removed
+
+The BFF facade was an application-layer relay that proxied API key → signer session exchange through the dashboard backend. Routing this through a third-party relay added latency and a dependency on the dashboard deployment for a security-critical token exchange.
+
+### Migration
+
+Call the canonical PymtHouse endpoint directly:
+
+```diff
+- POST /api/pymthouse/keys/exchange   (external dashboard BFF)
+
++ POST /api/v1/apps/{clientId}/auth/api-key/signer-session
++ Authorization: Bearer pmth_…
+```
+
+The response is the canonical **`SignerSession`** envelope: `access_token`, `token_type`, `expires_in`, `scope`, `balanceUsdMicros`, `lifetimeGrantedUsdMicros`, `signer_url` (optional), `issued_token_type`, `correlation_id` (optional). Pass this response shape unchanged to callers. See [API keys — Exchange API key → signer session](/integration/api-keys#exchange-api-key--signer-session-single-call).
 
 ---
 
@@ -191,6 +281,9 @@ Discovery profiles are a legacy mechanism for expressing pipeline/model capabili
 
 | Route | Status | Replacement |
 | --- | --- | --- |
+| `GET /api/v1/auth/validate` | Removed | `POST /api/v1/auth/validate` with `{ "key": "pmth_…" }` |
+| `GET/POST/DELETE /api/v1/apps/{clientId}/keys` | Removed | `…/users/{externalUserId}/keys` (per-user) |
+| `POST /api/pymthouse/keys/exchange` (BFF) | Removed | `POST .../auth/api-key/signer-session` on issuer |
 | `POST /api/signer/generate-live-payment` | `410 Gone` | `createDirectSignerProxyHandler` + DMZ |
 | `POST /api/signer/sign-orchestrator-info` | `410 Gone` | Direct DMZ |
 | `POST /api/signer/sign-byoc-job` | `410 Gone` | Direct DMZ |

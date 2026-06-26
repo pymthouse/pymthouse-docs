@@ -11,7 +11,10 @@ Two types of API keys exist:
 | --- | --- | --- | --- |
 | **M2M client secret** | `pmth_cs_…` | App-level (all users) | App credentials endpoint |
 | **Per-user API key** | `pmth_ak_…` | Scoped to one `externalUserId` | `POST .../users/{id}/keys` |
-| **App-level API key** | `pmth_ak_…` | Tied to an app subscription | `POST .../keys` |
+
+<Warning>
+  Do not mix credential types. Presenting a `pmth_cs_*` M2M client secret to `POST .../auth/api-key/token` or `POST .../auth/api-key/signer-session` returns **`400 invalid_request`** (not `401`). The API-key exchange routes accept only per-user `pmth_*` API keys as Bearer credentials — M2M secrets must be used with HTTP Basic auth for Builder API routes.
+</Warning>
 
 ## Per-user API keys
 
@@ -67,18 +70,6 @@ Revocation is immediate. Any exchange request using the revoked key returns `401
 
 ---
 
-## App-level API keys
-
-App-level keys are tied to a subscription and suitable for app-wide machine access without a specific user context.
-
-```http
-GET    /api/v1/apps/{clientId}/keys
-POST   /api/v1/apps/{clientId}/keys
-DELETE /api/v1/apps/{clientId}/keys
-```
-
-Auth: provider dashboard session. Returns the same `pmth_ak_…` format.
-
 ---
 
 ## Exchange API key → short-lived JWT
@@ -131,31 +122,90 @@ const tokens = await client.exchangeApiKeyForUserAccessToken({
 
 ---
 
-## Exchange API key → signer session
+## Exchange API key → signer session (single call)
 
-Skip the separate signer session exchange by using the SDK helper, which calls the API key token endpoint and then performs the RFC 8693 exchange in one step:
+Exchange a `pmth_*` API key directly for a signer session in one HTTP call using the canonical endpoint. This replaces the two-step pattern (API key → JWT → RFC 8693 exchange) and the deprecated dashboard BFF facade:
+
+```http
+POST /api/v1/apps/{clientId}/auth/api-key/signer-session
+Authorization: Bearer pmth_ak_abc123...
+Content-Type: application/json
+```
+
+Optional request body:
+
+```json
+{ "scope": "sign:job" }
+```
+
+Response — **`SignerSession` envelope:**
+
+```json
+{
+  "access_token": "pmth_signer_session_...",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "scope": "sign:job",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000",
+  "signer_url": "https://dmz.example.com",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token"
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `access_token` | Opaque signer session bearer for the remote DMZ. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance for the user in USD micros. |
+| `lifetimeGrantedUsdMicros` | Total lifetime granted allowance for the user. |
+| `signer_url` | Direct DMZ URL for this app (optional; present when configured). |
+| `issued_token_type` | RFC 8693 token type indicator. |
+| `correlation_id` | Opaque tracing id (optional). |
+
+```bash
+API_KEY="pmth_ak_abc123..."
+
+curl -sS -X POST \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"scope":"sign:job"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/auth/api-key/signer-session"
+```
+
+SDK:
 
 ```ts
 const session = await client.exchangeApiKeyForSignerSession({
   apiKey: process.env.PMTH_API_KEY!,
-  facadeUrl: process.env.DASHBOARD_ORIGIN!, // e.g. https://dashboard.example.com
   scope: "sign:job",
 });
 // session.access_token — opaque pmth_… signer bearer for the DMZ
+// session.balanceUsdMicros — user's current entitlement balance
+// session.signer_url — DMZ URL when available
 ```
+
+<Note>
+  Integrator and dashboard facades that previously forwarded requests to `POST /api/pymthouse/keys/exchange` (a BFF route outside PymtHouse) should migrate to call `POST .../auth/api-key/signer-session` on the PymtHouse issuer directly. Pass the `SignerSession` response unchanged to the caller.
+</Note>
 
 ---
 
 ## Validate an API key (subscription-backed)
 
-To validate a Bearer `pmth_*` key and check the associated plan and capabilities, use the internal validation endpoint. This is used by integrations that need to gate access before processing a request:
+To validate a Bearer `pmth_*` key and check the associated plan and capabilities, POST to the validation endpoint. This is used by integrations that need to gate access before processing a request:
 
 ```http
-GET /api/v1/auth/validate
-Authorization: Bearer pmth_ak_abc123...
+POST /api/v1/auth/validate
+Content-Type: application/json
+
+{ "key": "pmth_ak_abc123..." }
 ```
 
 Returns `{ valid: true, planId: "...", capabilities: [...] }` on success.
+
+<Note>
+  The legacy `GET /api/v1/auth/validate` with a `Bearer` header has been removed. Use `POST /api/v1/auth/validate` with the key in the JSON body (`BPP_VALIDATE_V2=1`). See [Deprecated routes](/integration/deprecated) for the migration.
+</Note>
 
 ---
 

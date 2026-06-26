@@ -82,11 +82,12 @@ The issued JWT contains:
 | `iss` | PymtHouse issuer URL | Verify against discovery. |
 | `sub` | `app_users.id` (PymtHouse app-user row id) | Not the same as `externalUserId`. |
 | `client_id` / `azp` | Public `app_…` client id | Used for tenant matching in RFC 8693 exchanges. |
+| `external_user_id` | Your system's user identifier | The `externalUserId` as stored during provisioning. Included on programmatic user JWTs for downstream attribution without requiring a separate lookup. |
 | `scope` | Granted scopes | Subset of the public client's `allowed_scopes`. |
 | `exp` | Expiry timestamp | Tokens are short-lived by design. |
 
 <Warning>
-  `sub` is the PymtHouse internal app-user id, **not** your `externalUserId`. If you need to correlate the JWT back to your user, use the `client_id`/`azp` + your own session context rather than parsing `sub`.
+  `sub` is the PymtHouse internal app-user id, **not** your `externalUserId`. Prefer the `external_user_id` claim for correlating the JWT back to your user, rather than parsing `sub`.
 </Warning>
 
 ## Passing the token to downstream services
