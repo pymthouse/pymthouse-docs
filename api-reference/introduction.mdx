@@ -3,7 +3,7 @@ title: API reference
 description: How the PymtHouse HTTP APIs and OIDC surface fit together, and where to find endpoint-level documentation.
 ---
 
-PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder and billing APIs** under a single base URL. This tab will collect machine-readable **OpenAPI** definitions as they become available; the live **authorization, token, and user-management** paths are also listed in your tenant's [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document so your client always tracks endpoint rotations.
+PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder and billing APIs** under a single base URL. A machine-readable **OpenAPI 3.1 document** and interactive **Scalar UI** are now served directly from your PymtHouse instance. The live **authorization, token, and user-management** paths are also listed in your tenant's [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document so your client always tracks endpoint rotations.
 
 ## Base URL and discovery
 
@@ -11,6 +11,21 @@ PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder 
 - **Discovery (runtime source of truth):** `GET {issuer}/.well-known/openid-configuration` returns all authorization, token, and JWKS endpoints for your environment.
 
 Always resolve OAuth and OIDC URLs from discovery in production. Hard-coded paths are brittle when routes or hostnames change.
+
+## Live API reference
+
+Two self-documentation endpoints are available on every PymtHouse deployment:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/v1/openapi.json` | OpenAPI 3.1 document generated from scanned route handlers and per-route metadata. |
+| `GET /api/v1/docs` | Interactive Scalar API reference UI — browse, try requests, and inspect schemas. |
+
+The OpenAPI document covers all 90+ Builder API operations, including deprecation markers for removed routes. OIDC issuer metadata remains at `{issuer}/.well-known/openid-configuration` (a virtual pointer to `POST /api/v1/oidc/token` appears in the OpenAPI document for cross-reference).
+
+<Note>
+  `GET /api/v1/openapi.json` is regenerated from route metadata at build time. After adding route handlers, run `npm run openapi:generate` to refresh the inventory. CI runs `npm run check:openapi` to fail on metadata drift.
+</Note>
 
 ## Where to find endpoint documentation
 
@@ -21,6 +36,7 @@ All endpoint guides currently live in the **Builder guides** tab:
 | End-to-end auth flows, PKCE, device code, token exchange | [Builder guides](/quickstart) tab |
 | **Usage API** (aggregated usage, billing analytics) | [Usage API](/integration/usage-api) in Builder guides |
 | User management, app tokens, billing endpoints | [Builder guides](/integration/user-management) and related pages in that tab |
+| Interactive OpenAPI browser | `GET /api/v1/docs` on your PymtHouse instance |
 
 ## Next steps
 

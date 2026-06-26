@@ -143,6 +143,8 @@ Every app has a **Starter** plan created automatically (`isStarterDefault: true`
 
 New end-users are auto-subscribed to the Starter plan when provisioned (via `POST /users`, signer token mint, or signed-ticket ingest) if they have no existing subscription.
 
+**Stripe billing not required for Starter access.** If your app does not yet have Stripe billing fully connected (no Stripe Connect account linked, or Stripe setup is incomplete), end-users still receive Free Starter access. PymtHouse detects Stripe-related setup errors and recovers gracefully rather than failing subscription provisioning — users are granted the Starter allowance even when the Stripe billing configuration is pending. Connect Stripe via `POST /api/v1/apps/{clientId}/billing/stripe/connect` when you are ready to enable paid plans and Stripe invoicing.
+
 Providers can update the Starter allowance via:
 
 ```http

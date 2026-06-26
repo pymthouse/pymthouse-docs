@@ -145,16 +145,34 @@ curl -sS \
 
 Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client always sends a resource indicator (RFC 8707).
 
-### Response
+### Response — `SignerSession` envelope
 
 ```json
 {
   "access_token": "pmth_signer_session_longtoken...",
-  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
   "token_type": "Bearer",
-  "expires_in": 86400
+  "expires_in": 86400,
+  "scope": "sign:job",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000",
+  "signer_url": "https://dmz.example.com",
+  "correlation_id": "req_abc123"
 }
 ```
+
+| Field | Description |
+| --- | --- |
+| `access_token` | Opaque signer session bearer for the remote DMZ. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance for the user in USD micros (optional). |
+| `lifetimeGrantedUsdMicros` | Total lifetime granted allowance for the user (optional). |
+| `signer_url` | Direct DMZ URL for this app (optional; present when configured). |
+| `issued_token_type` | RFC 8693 token type indicator. |
+| `correlation_id` | Opaque tracing id (optional). |
+
+<Note>
+  Integrator facades should pass the `SignerSession` response shape through unchanged. For the single-call API key → signer session path (no prior user JWT needed), use `POST .../auth/api-key/signer-session` instead. See [API keys](/integration/api-keys#exchange-api-key--signer-session-single-call).
+</Note>
 
 SDK helpers:
 
@@ -174,6 +192,7 @@ const session = await client.mintSignerSessionForExternalUser({
   email: "user@example.com",
 });
 // session.accessToken is opaque pmth_…
+// session.signerUrl — DMZ URL when available
 ```
 
 ---
