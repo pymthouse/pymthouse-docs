@@ -141,7 +141,9 @@ For `free` plans, `overageUnits` and `overageWei` are always `"0"`.
 
 Every app has a **Starter** plan created automatically (`isStarterDefault: true`). It is separate from custom billing plans and from the Network Price discovery plan. Starter carries an `includedUsdMicros` allowance (default `5000000` = $5.00) and is automatically synced to OpenMeter.
 
-New end-users are auto-subscribed to the Starter plan when provisioned (via `POST /users`, signer token mint, or signed-ticket ingest) if they have no existing subscription.
+New end-users are auto-subscribed to the Starter plan when provisioned (via `POST /users`, signer token mint, or Kafka collector ingest) if they have no existing subscription.
+
+**Stripe billing is not required for Starter access.** Apps without Stripe Connect linked (or with incomplete Stripe setup) still grant Free Starter access. PymtHouse recovers from Stripe-related setup errors during subscription provisioning rather than failing the user — Connect Stripe via `POST /api/v1/apps/{clientId}/billing/stripe/connect` when you are ready for paid plans and invoicing.
 
 Providers can update the Starter allowance via:
 

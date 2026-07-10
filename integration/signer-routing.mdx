@@ -18,7 +18,6 @@ sequenceDiagram
   participant App as App backend
   participant PM as PymtHouse Builder API
   participant DMZ as Remote signer DMZ
-  participant OP as OIDC issuer
 
   App->>PM: GET .../signer/routing
   PM-->>App: { dmzUrl, webhookUrl, meteringMode }
@@ -26,10 +25,10 @@ sequenceDiagram
   App->>PM: Mint user JWT (Builder API /users/{id}/token)
   PM-->>App: short-lived JWT (sign:job scope)
 
-  App->>OP: RFC 8693 exchange → opaque signer session
-  OP-->>App: pmth_… signer session token
+  App->>PM: POST .../apps/{clientId}/oidc/token (RFC 8693)
+  PM-->>App: SignerSession (access_token = signer JWT)
 
-  App->>DMZ: Forward signing request (Bearer pmth_…)
+  App->>DMZ: Forward signing request (Bearer signer JWT)
   DMZ->>App: POST /authorize (webhook)
   App-->>DMZ: { auth_id, externalUserId }
   DMZ-->>App: Signed ticket
@@ -125,25 +124,18 @@ const response = await forwardDirectSignerRequest({
 });
 ```
 
-### Device and API key exchange handlers
+### Device exchange handler
 
-For CLI device flows and API key integrations, builder-sdk provides purpose-built handlers:
+For CLI device flows, builder-sdk provides a purpose-built handler:
 
 ```ts
-import {
-  createDeviceExchangeHandler,
-  createApiKeyExchangeHandler,
-} from "@pymthouse/builder-sdk/signer/server";
+import { createDeviceExchangeHandler } from "@pymthouse/builder-sdk/signer/server";
 
 // POST /api/signer/device/exchange — device token → signer JWT
 const deviceExchange = createDeviceExchangeHandler({ client });
-
-// POST /api/signer/api-key/exchange — API key → signer session via facade
-const apiKeyExchange = createApiKeyExchangeHandler({
-  client,
-  facadeUrl: process.env.DASHBOARD_ORIGIN!,
-});
 ```
+
+For API keys, exchange at `POST /api/v1/apps/{clientId}/oidc/token` with the key as `subject_token` (see [API keys](/integration/api-keys)). Do not use dashboard facade URLs or the removed `auth/api-key/*` routes.
 
 ---
 

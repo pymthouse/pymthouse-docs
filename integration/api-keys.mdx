@@ -1,21 +1,26 @@
 ---
 title: API keys
-description: Long-lived opaque pmth_* API keys for app-level and per-user integrations. Exchange for short-lived JWTs or signer sessions.
+description: Long-lived per-user pmth_* API keys. Exchange them at the app-scoped OIDC token endpoint for SignerSession envelopes.
 ---
 
-PymtHouse issues **long-lived opaque API keys** prefixed `pmth_*`. These complement short-lived JWTs: instead of repeating a device login or a full OAuth flow, your integration exchanges a stored API key for a short-lived JWT on demand.
+PymtHouse issues **long-lived opaque API keys** for per-app users. Use them as the `subject_token` on the app-scoped token exchange endpoint when you need a short-lived `SignerSession` without repeating a full OAuth login.
 
-Two types of API keys exist:
+Do **not** mix credential types. Prefixes have fixed roles:
 
-| Type | Prefix | Scope | Created via |
-| --- | --- | --- | --- |
-| **M2M client secret** | `pmth_cs_…` | App-level (all users) | App credentials endpoint |
-| **Per-user API key** | `pmth_ak_…` | Scoped to one `externalUserId` | `POST .../users/{id}/keys` |
-| **App-level API key** | `pmth_ak_…` | Tied to an app subscription | `POST .../keys` |
+| Prefix | Role | RFC usage |
+| --- | --- | --- |
+| `pmth_<hex>` | Per-app-user **API key** (stored / hashed form) | `subject_token` on `POST /api/v1/apps/{clientId}/oidc/token` |
+| `app_<clientId>.pmth_<hex>` | **Presented** API key (issuance + remote-signer Bearer) | Same as bare `pmth_*`; the `app_*` prefix routes the key to the correct app |
+| `pmth_cs_<hex>` | Confidential **M2M client secret** | HTTP Basic with `m2m_…` client id — never pass as `subject_token` |
+| `app_…` / `m2m_…` | Public / confidential OAuth client ids | Path params and token endpoint `client_id` |
+
+Newly issued keys are returned as `app_<clientId>.pmth_<hex>` (RFC 6750-safe `.` separator). Bare `pmth_*` remains valid as `subject_token` when the path already supplies `{clientId}`.
+
+App-level keys at `GET`/`POST`/`DELETE /api/v1/apps/{clientId}/keys` were **removed**. Use per-user keys only. See [Deprecated routes](/integration/deprecated).
 
 ## Per-user API keys
 
-Issue long-lived API keys to specific end-users. These are suitable for CLI tools and service accounts where the user authenticates once and stores the key.
+Issue long-lived API keys to specific end-users. These suit CLI tools and service accounts where the user authenticates once and stores the key.
 
 ### Create a key
 
@@ -24,7 +29,7 @@ POST /api/v1/apps/{clientId}/users/{externalUserId}/keys
 Authorization: Basic base64(m2m_id:m2m_secret)
 ```
 
-The full `pmth_*` secret is returned **once only** at creation time. Store it securely.
+The full secret is returned **once only** at creation time. Store it securely.
 
 ```bash
 export BASE_URL="https://your-pymthouse.example"
@@ -42,7 +47,7 @@ Response:
 ```json
 {
   "keyId": "key-uuid",
-  "apiKey": "pmth_ak_abc123...",
+  "apiKey": "app_yourClientId.pmth_a1b2c3...",
   "createdAt": "2026-04-01T00:00:00.000Z"
 }
 ```
@@ -54,7 +59,7 @@ GET /api/v1/apps/{clientId}/users/{externalUserId}/keys
 Authorization: Basic base64(m2m_id:m2m_secret)
 ```
 
-Returns key IDs and creation timestamps. The `pmth_*` value is never returned after creation.
+Returns key IDs and creation timestamps. The secret value is never returned after creation.
 
 ### Revoke a key
 
@@ -67,37 +72,36 @@ Revocation is immediate. Any exchange request using the revoked key returns `401
 
 ---
 
-## App-level API keys
+## Exchange API key → SignerSession
 
-App-level keys are tied to a subscription and suitable for app-wide machine access without a specific user context.
-
-```http
-GET    /api/v1/apps/{clientId}/keys
-POST   /api/v1/apps/{clientId}/keys
-DELETE /api/v1/apps/{clientId}/keys
-```
-
-Auth: provider dashboard session. Returns the same `pmth_ak_…` format.
-
----
-
-## Exchange API key → short-lived JWT
-
-Exchange a `pmth_*` API key for a short-lived user JWT using Bearer auth:
+Exchange a `pmth_*` (or presented `app_….pmth_*`) API key for a clearinghouse-compatible **`SignerSession`** via RFC 8693 token exchange:
 
 ```http
-POST /api/v1/apps/{clientId}/auth/api-key/token
-Authorization: Bearer pmth_ak_abc123...
-Content-Type: application/json
+POST /api/v1/apps/{clientId}/oidc/token
+Content-Type: application/x-www-form-urlencoded
 ```
 
-Optional request body:
+| Field | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | User API key (`pmth_*` or `app_….pmth_*`) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `audience` / `resource` | Optional; when set must match the configured signer audience |
 
-```json
-{ "scope": "sign:job" }
+Optional HTTP Basic with the M2M client (`m2m_*` + secret). When omitted, the `subject_token` alone authenticates the exchange.
+
+```bash
+API_KEY="pmth_a1b2c3..."   # or app_yourClientId.pmth_a1b2c3...
+
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=${API_KEY}" \
+  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/oidc/token"
 ```
 
-Response: OIDC token bundle.
+Response — canonical **`SignerSession`** envelope:
 
 ```json
 {
@@ -105,71 +109,67 @@ Response: OIDC token bundle.
   "token_type": "Bearer",
   "expires_in": 300,
   "scope": "sign:job",
-  "externalUserId": "user-123"
+  "signer_url": "https://dmz.example.com",
+  "discovery_url": "https://discovery.livepeer.cloud",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "correlation_id": "…",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000"
 }
 ```
 
-```bash
-API_KEY="pmth_ak_abc123..."
+| Field | Description |
+| --- | --- |
+| `access_token` | Short-lived signer JWT for the remote DMZ. |
+| `signer_url` | Optional remote signer DMZ URL. |
+| `discovery_url` | Optional Livepeer network discovery URL (not OIDC metadata). |
+| `issued_token_type` | RFC 8693 issued token type when present. |
+| `correlation_id` | Optional request correlation id. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance (USD micros). |
+| `lifetimeGrantedUsdMicros` | Lifetime granted allowance (USD micros). |
 
-curl -sS -X POST \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"scope":"sign:job"}' \
-  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/auth/api-key/token"
-```
+The removed routes `POST .../auth/api-key/token` and `POST .../auth/api-key/signer-session` are gone — always use `POST .../oidc/token`.
 
-SDK:
-
-```ts
-const tokens = await client.exchangeApiKeyForUserAccessToken({
-  apiKey: process.env.PMTH_API_KEY!,
-});
-// tokens.access_token — short-lived JWT for the user
-// tokens.externalUserId — resolved external user id
-```
-
----
-
-## Exchange API key → signer session
-
-Skip the separate signer session exchange by using the SDK helper, which calls the API key token endpoint and then performs the RFC 8693 exchange in one step:
+SDK (when available in your `@pymthouse/builder-sdk` version):
 
 ```ts
 const session = await client.exchangeApiKeyForSignerSession({
   apiKey: process.env.PMTH_API_KEY!,
-  facadeUrl: process.env.DASHBOARD_ORIGIN!, // e.g. https://dashboard.example.com
-  scope: "sign:job",
 });
-// session.access_token — opaque pmth_… signer bearer for the DMZ
+// session.access_token — signer JWT for the DMZ
 ```
+
+Prefer calling `POST .../oidc/token` directly if your SDK still documents a facade URL or the old `auth/api-key/*` paths.
 
 ---
 
-## Validate an API key (subscription-backed)
+## Validate an API key
 
-To validate a Bearer `pmth_*` key and check the associated plan and capabilities, use the internal validation endpoint. This is used by integrations that need to gate access before processing a request:
+Validate a presented key with a JSON body (GET validation was removed):
 
 ```http
-GET /api/v1/auth/validate
-Authorization: Bearer pmth_ak_abc123...
+POST /api/v1/auth/validate
+Content-Type: application/json
+
+{ "key": "pmth_…" }
 ```
 
-Returns `{ valid: true, planId: "...", capabilities: [...] }` on success.
+Requires `BPP_VALIDATE_V2=1` on the PymtHouse deployment. See live schemas at `GET /api/v1/openapi.json` or the Scalar UI at `GET /api/v1/docs`.
 
 ---
 
 ## Security guidance
 
-- Store API keys in a secret manager, not in source code or environment files committed to version control.
-- The `pmth_*` secret is returned once at creation. If lost, revoke the key and create a new one.
-- Prefer short-lived JWTs (5-minute TTL) on the signing hot path; exchange the stored API key on demand rather than using it directly as a Bearer token for signing.
+- Store API keys in a secret manager, not in source code or committed environment files.
+- The secret is returned once at creation. If lost, revoke the key and create a new one.
+- Prefer short-lived JWTs on the signing hot path; exchange the stored API key on demand.
+- Never pass `pmth_cs_*` as `subject_token` — that prefix is only for M2M HTTP Basic auth.
 - Revoke keys immediately when a user is deactivated or an integration is disconnected.
-- Use per-user keys (not the M2M client secret `pmth_cs_…`) for end-user-facing integrations so revocation is scoped to one user.
+- Use per-user keys (not the M2M client secret) so revocation is scoped to one user.
 
 ## Related guides
 
 - [User management](/integration/user-management) — provisioning users before issuing keys
-- [Token exchange](/integration/token-exchange) — RFC 8693 signer session exchange
+- [Token exchange](/integration/token-exchange) — RFC 8693 device completion and signer session exchange
 - [Signer routing](/integration/signer-routing) — using the signer session at the DMZ
-- [Builder SDK](/integration/sdk) — `exchangeApiKeyForUserAccessToken`, `exchangeApiKeyForSignerSession`
+- [Deprecated routes](/integration/deprecated) — removed `auth/api-key/*` and app-level `/keys` paths

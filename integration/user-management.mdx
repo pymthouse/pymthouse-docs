@@ -153,7 +153,7 @@ curl -sS -X DELETE \
 
 ## Per-user API keys
 
-Long-lived opaque API keys (`pmth_*`) can be issued per-user and exchanged for short-lived JWTs or signer sessions without repeating device login.
+Long-lived opaque API keys (`pmth_<hex>`, presented as `app_<clientId>.pmth_<hex>`) can be issued per-user and exchanged for a **`SignerSession`** without repeating device login.
 
 ```http
 GET    /api/v1/apps/{clientId}/users/{externalUserId}/keys
@@ -164,43 +164,30 @@ Authorization: Basic base64(m2m_id:m2m_secret)
 
 **GET** returns the list of active API keys for the user.
 
-**POST** creates a new key. Response includes the full `pmth_*` secret (shown once only):
+**POST** creates a new key. Response includes the full secret (shown once only):
 
 ```json
 {
   "keyId": "key-uuid",
-  "apiKey": "pmth_ak_...",
+  "apiKey": "app_yourClientId.pmth_a1b2c3...",
   "createdAt": "2026-04-01T00:00:00.000Z"
 }
 ```
 
 **DELETE** with `?keyId=<uuid>` revokes the key immediately.
 
-Exchange a per-user API key for a short-lived JWT:
+Exchange a per-user API key for a `SignerSession` at the app-scoped OIDC token endpoint:
 
 ```http
-POST /api/v1/apps/{clientId}/auth/api-key/token
-Authorization: Bearer pmth_ak_...
-Content-Type: application/json
+POST /api/v1/apps/{clientId}/oidc/token
+Content-Type: application/x-www-form-urlencoded
 
-{ "scope": "sign:job" }
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange&
+subject_token=pmth_...&
+subject_token_type=urn:ietf:params:oauth:token-type:access_token
 ```
 
-See [API keys](/integration/api-keys) for the full exchange flow.
-
----
-
-## App-level API keys
-
-App-level API keys (tied to a subscription) are managed separately:
-
-```http
-GET    /api/v1/apps/{clientId}/keys
-POST   /api/v1/apps/{clientId}/keys
-DELETE /api/v1/apps/{clientId}/keys
-```
-
-Auth: provider dashboard session. These keys are suitable for integrations where a single credential covers the entire app rather than individual users.
+App-level keys at `/api/v1/apps/{clientId}/keys` and `POST .../auth/api-key/*` were removed. See [API keys](/integration/api-keys) and [Deprecated routes](/integration/deprecated).
 
 ---
 

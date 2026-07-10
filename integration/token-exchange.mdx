@@ -1,38 +1,26 @@
 ---
 title: Token exchange
-description: Use OAuth 2.0 Token Exchange (RFC 8693) to complete device authorization, obtain a remote signer session, or mint a user signer token via the clearinghouse.
+description: Use OAuth 2.0 Token Exchange (RFC 8693) for device completion, app-scoped SignerSession issuance, and clearinghouse Option A mint.
 ---
 
-PymtHouse implements the **OAuth 2.0 Token Exchange** grant (RFC 8693) for three server-side operations:
+PymtHouse implements **OAuth 2.0 Token Exchange** (RFC 8693) for three server-side operations. They use **different endpoints**:
 
-1. **Device completion** — a backend binds a pending RFC 8628 device grant to an authenticated user, completing the CLI authentication flow without a second browser redirect.
-2. **Remote signer session exchange** — a short-lived access token is exchanged for a long-lived opaque remote signer session token (`pmth_*`) scoped to `sign:job`.
-3. **Clearinghouse signer mint (Option A)** — M2M client credentials with `sign:mint_user_token` scope mints a user-scoped signer JWT and allowance data in a single call without a prior Builder API user-token step.
+1. **Device completion** — bind a pending RFC 8628 device grant to an authenticated user via `POST {issuer}/token`.
+2. **Signer session exchange** — exchange a user JWT **or** per-user API key for a clearinghouse-compatible **`SignerSession`** via `POST /api/v1/apps/{clientId}/oidc/token`.
+3. **Clearinghouse signer mint (Option A)** — M2M `client_credentials` with `sign:mint_user_token` on `POST /api/v1/oidc/token` mints a user-scoped signer JWT and allowance data in one call.
 
-Operations 1 and 2 use the same token endpoint (`POST {issuer}/token`) and the same `grant_type`, but with different `resource` values. Operation 3 uses `client_credentials` grant type.
-
-## Common parameters (operations 1 & 2)
-
-All RFC 8693 token exchange requests:
-
-| Parameter | Value |
-| --- | --- |
-| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
-| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
-| `subject_token` | A valid access token issued by this PymtHouse issuer |
-
-Authentication: **M2M HTTP Basic auth** (`Authorization: Basic base64(m2m_id:m2m_secret)`) is required for all token exchange calls.
+The global OIDC token endpoint (`POST /api/v1/oidc/token` or `{issuer}/token`) covers standard OAuth grants and device completion. **API-key and user-JWT SignerSession exchange** use the **app-scoped** route, not the global token endpoint.
 
 ---
 
 ## Device completion (RFC 8693 + RFC 8628)
 
-Use this operation in the **NaaP / Option B** flow: after the user authenticates at your backend, call the token endpoint to bind the pending device grant. The polling CLI receives its access token on the next poll.
+Use this in the **NaaP / Option B** flow: after the user authenticates at your backend, call the **global** issuer token endpoint to bind the pending device grant. The polling CLI receives its access token on the next poll.
 
 ### Prerequisites
 
 - A confidential M2M client (`m2m_…`) with `device:approve` **or** `users:token` scope.
-- `device_third_party_initiate_login` enabled on the **public** client.
+- `device_third_party_initiate_login` enabled on the **public** client where required.
 - A user-scoped JWT for the **public** `app_…` client (minted via [User tokens](/integration/user-tokens)).
 
 ### Flow
@@ -46,13 +34,15 @@ sequenceDiagram
   Note over RP: User has authenticated at RP's IdP
   RP->>OP: Mint user JWT (Builder API /users/{id}/token)
   OP-->>RP: user_jwt (sub = app-user, azp = app_…)
-  RP->>OP: POST /token — token exchange, resource = urn:pmth:device_code:ABCD-EFGH
+  RP->>OP: POST {issuer}/token — token exchange, resource = urn:pmth:device_code:ABCD-EFGH
   OP-->>RP: 200 RFC 8693 response (device grant bound as side-effect)
   Device->>OP: Poll POST /token (grant_type=device_code)
   OP-->>Device: access_token ✓
 ```
 
 ### Request
+
+HTTP Basic with the M2M client is **required** for device completion.
 
 ```bash
 ISSUER="${BASE_URL}/api/v1/oidc"
@@ -71,30 +61,28 @@ curl -sS \
   "${ISSUER}/token"
 ```
 
-**`resource` format:** `urn:pmth:device_code:<user_code>` — use the `user_code` (e.g. `ABCD-EFGH`), not the `device_code`. PymtHouse normalizes the code before lookup.
+**`resource` format:** `urn:pmth:device_code:<user_code>` — use the `user_code` (e.g. `ABCD-EFGH`), not the `device_code`.
 
 ### Subject token requirements
 
 The `subject_token` must be:
 
 - A valid JWT issued by **this** PymtHouse issuer (signature verified against `{issuer}/jwks`).
-- Issued to the **public** `app_…` client for the same app (`client_id` or `azp` claim = public client id).
+- Issued to the **public** `app_…` client for the same app (`client_id` or `azp` = public client id).
 - Not expired.
-
-The M2M client's `allowed_scopes` must include `device:approve` or `users:token`.
 
 ### Response
 
 ```json
 {
-  "access_token": "pmth_signer_session_...",
+  "access_token": "…",
   "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
   "token_type": "Bearer",
   "expires_in": 86400
 }
 ```
 
-The binding of the device grant is a **side-effect** of this call. The CLI's next poll of the device code token endpoint will return the bound session.
+The binding of the device grant is a **side-effect** of this call. The CLI's next poll returns the bound session.
 
 SDK helper:
 
@@ -108,79 +96,101 @@ await client.approveDeviceLogin({
 
 ---
 
-## Signer session exchange
+## Signer session exchange (app-scoped)
 
-Use this operation to exchange a short-lived user access token for a long-lived opaque remote signer session token (`pmth_*`).
+Clearinghouse-compatible **`SignerSession`** issuance:
 
-### Prerequisites
-
-- **HTTP Basic auth** with the confidential **M2M** client (`m2m_…` and secret).
-- The M2M client's `allowed_scopes` must include **`users:token`**.
-- The `subject_token` must already contain **`sign:job`** scope.
-
-### Subject token binding
-
-The `subject_token` must be a JWT from this issuer whose `client_id` or `azp` is either:
-
-- The **public** `app_…` client for the same developer app as the authenticating M2M client (typical after interactive login or Builder user-token mint), or
-- The same **M2M** `client_id` as the request (legacy `client_credentials` access token used as `subject_token`).
-
-### Request
-
-```bash
-ISSUER="${BASE_URL}/api/v1/oidc"
-M2M_ID="m2m_yourClientId"
-M2M_SECRET="pmth_cs_yourSecret"
-ACCESS_TOKEN="eyJ..."  # user access token with sign:job scope (azp = public app_…)
-
-curl -sS \
-  -u "${M2M_ID}:${M2M_SECRET}" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-  --data-urlencode "subject_token=${ACCESS_TOKEN}" \
-  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
-  --data-urlencode "scope=sign:job" \
-  "${ISSUER}/token"
+```http
+POST /api/v1/apps/{clientId}/oidc/token
+Content-Type: application/x-www-form-urlencoded
 ```
 
-Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client always sends a resource indicator (RFC 8707).
+| Field | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | User access JWT **or** per-app-user API key (`pmth_*` / `app_….pmth_*`) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `audience` / `resource` | Optional; when provided must match configured signer audience (issuer URL, `SIGNER_TOKEN_AUDIENCE`, or legacy `livepeer-clearinghouse` / `livepeer-remote-signer`) |
 
-### Response
+Optional HTTP Basic with the M2M client. When omitted, the `subject_token` alone authenticates the exchange.
+
+Do **not** use the global `{issuer}/token` endpoint for API-key SignerSession exchange. Do **not** call the removed `POST .../auth/api-key/signer-session` route.
+
+### Example (API key as `subject_token`)
+
+```bash
+CLIENT_ID="app_yourClientId"
+API_KEY="pmth_..."
+
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=${API_KEY}" \
+  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/oidc/token"
+```
+
+### Example (user JWT after device flow or M2M user-token mint)
+
+```bash
+USER_JWT="eyJ..."
+
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=${USER_JWT}" \
+  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/oidc/token"
+```
+
+### Response (`SignerSession`)
 
 ```json
 {
-  "access_token": "pmth_signer_session_longtoken...",
-  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "access_token": "eyJ...",
   "token_type": "Bearer",
-  "expires_in": 86400
+  "expires_in": 300,
+  "scope": "sign:job",
+  "signer_url": "https://dmz.example.com",
+  "discovery_url": "https://discovery.livepeer.cloud",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "correlation_id": "…",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000"
 }
 ```
 
-SDK helpers:
+| Field | Description |
+| --- | --- |
+| `access_token` | Short-lived signer JWT for the remote DMZ. |
+| `signer_url` | Optional remote signer DMZ URL. |
+| `discovery_url` | Optional Livepeer network discovery URL (not OIDC metadata). |
+| `issued_token_type` | RFC 8693 issued token type when present. |
+| `correlation_id` | Optional request correlation id. |
+| `balanceUsdMicros` | Current OpenMeter entitlement balance (USD micros). |
+| `lifetimeGrantedUsdMicros` | Lifetime granted allowance (USD micros). |
+
+SDK helpers (paths may vary by SDK version — prefer the HTTP contract above):
 
 ```ts
-// Exchange a user JWT for a signer session
 const session = await client.exchangeForSignerSession({ userJwt: accessToken });
 
-// Mint user JWT + exchange in one call
 const session = await client.mintUserSignerSessionToken({
   externalUserId: "naap-user-123",
   scope: "sign:job",
 });
 
-// Full workflow: upsert user + mint + exchange
 const session = await client.mintSignerSessionForExternalUser({
   externalUserId: "naap-user-123",
   email: "user@example.com",
 });
-// session.accessToken is opaque pmth_…
 ```
 
 ---
 
 ## Clearinghouse signer mint (Option A)
 
-M2M clients with `sign:mint_user_token` scope (automatically added when the public client has `sign:job`) can mint a user-scoped signer JWT and receive allowance balance information in a single `client_credentials` call. This avoids the separate Builder API user-token step.
+M2M clients with `sign:mint_user_token` (auto-added when the public client has `sign:job`) can mint a user-scoped signer JWT and receive allowance balance in a single `client_credentials` call on the **global** OIDC token endpoint.
 
 ### Request
 
@@ -196,7 +206,6 @@ curl -sS \
   --data-urlencode "client_secret=${M2M_SECRET}" \
   --data-urlencode "scope=sign:mint_user_token" \
   --data-urlencode "external_user_id=naap-user-123" \
-  --data-urlencode "audience=livepeer-remote-signer" \
   "${ISSUER}/token"
 ```
 
@@ -215,12 +224,14 @@ curl -sS \
 
 | Field | Description |
 | --- | --- |
-| `access_token` | User-scoped JWT with `aud=livepeer-remote-signer`. Use as a Bearer token at the remote signer DMZ. |
+| `access_token` | Short-lived signer JWT. Use as a Bearer token at the remote signer DMZ. |
 | `balanceUsdMicros` | Current OpenMeter entitlement balance for the user in USD micros. |
 | `lifetimeGrantedUsdMicros` | Total lifetime granted allowance for the user. |
 
+For a follow-on RFC 8693 exchange after minting a **user** JWT (not Option A), use `POST /api/v1/apps/{clientId}/oidc/token`.
+
 <Note>
-  `sign:mint_user_token` is automatically granted to M2M clients when the public sibling client has `sign:job` in its `allowed_scopes`. No manual scope configuration is required.
+  `sign:mint_user_token` is automatically granted to M2M clients when the public sibling client has `sign:job` in its `allowed_scopes`.
 </Note>
 
 ---
@@ -229,26 +240,24 @@ curl -sS \
 
 | Status | Condition |
 | --- | --- |
-| `400 invalid_grant` | `subject_token` is expired, invalid signature, or wrong issuer. |
-| `400 invalid_request` | Missing required parameter, or `resource` value not recognized. |
-| `401 Unauthorized` | M2M / client credentials invalid. |
-| `403 Forbidden` | M2M client lacks the required scope (`device:approve`, `users:token`, or `sign:mint_user_token`), or `subject_token` client mismatch. |
+| `400 invalid_grant` | `subject_token` is expired, invalid signature, wrong issuer, or invalid API key. |
+| `400 invalid_request` | Missing required parameter, or `resource` / `audience` not recognized. |
+| `401 Unauthorized` | M2M credentials invalid (when Basic is required or supplied). |
+| `403 Forbidden` | M2M client lacks the required scope, or `subject_token` client mismatch. |
 
 ---
 
 ## Key design decisions
 
-1. **Single token endpoint for all exchange types.** Routing device completion, signer session exchange, and signer JWT mint through `POST {issuer}/token` keeps the public surface minimal and consistent with RFC standards.
-2. **`resource` as the dispatch discriminator.** `urn:pmth:device_code:<user_code>` signals device completion; absence or the issuer URL routes to signer session exchange.
-3. **Binding is a side-effect, not the primary response.** The CLI polls the standard device code endpoint rather than a proprietary callback, keeping device polling logic independent of the Option B backend.
-4. **Option A (`sign:mint_user_token`)** minimizes round trips for clearinghouse integrators — one call returns both the signer JWT and the user's current balance.
+1. **App-scoped route for SignerSession.** Clearinghouse-compatible exchange (JWT or API key) uses `POST /api/v1/apps/{clientId}/oidc/token` so `{clientId}` is explicit and Basic auth can be optional when the API key authenticates the call.
+2. **Global issuer token endpoint for device completion and Option A.** Device binding and `sign:mint_user_token` stay on `{issuer}/token` / `/api/v1/oidc/token`.
+3. **Binding is a side-effect for device completion.** The CLI polls the standard device code endpoint rather than a proprietary callback.
+4. **Option A minimizes round trips** for clearinghouse integrators — one call returns the signer JWT and the user's current balance.
 
 ## Implementation tasks
 
-- For device completion: mint the user JWT via the Builder API **before** calling the token exchange.
-- Validate that your backend stores the `user_code` from the device code response and passes it verbatim to the `resource` parameter.
-- For signer session exchange, verify the `subject_token` contains `sign:job` before calling.
-- For Option A: ensure the M2M client has `sign:mint_user_token` in `allowed_scopes` (automatically derived from public client's `sign:job`).
-- Check `balanceUsdMicros` from the Option A response to gate access before forwarding to the DMZ.
-- Do not retry a device completion exchange with the same `user_code` after success; the grant has already been bound.
+- For device completion: mint the user JWT via the Builder API **before** calling `{issuer}/token`.
+- For SignerSession: call `POST /api/v1/apps/{clientId}/oidc/token` (not the global token endpoint, and not the removed `auth/api-key/*` routes).
+- Never pass `pmth_cs_*` as `subject_token`.
+- For Option A: rely on auto-derived `sign:mint_user_token` when the public client has `sign:job`.
 - After obtaining a signer session or signer JWT, forward it to the remote signer DMZ — see [Signer routing](/integration/signer-routing).

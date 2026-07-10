@@ -20,7 +20,7 @@ All integrations share the same identity model: every registered app gets a **pu
     TypeScript client for the Builder API, OIDC issuer, and signer integration. Install in one line.
   </Card>
   <Card title="API keys" icon="key" href="/integration/api-keys">
-    Long-lived pmth_* keys for per-user and app-level integrations. Exchange for short-lived JWTs on demand.
+    Long-lived per-user `pmth_*` keys. Exchange at `POST .../oidc/token` for a SignerSession.
   </Card>
 </CardGroup>
 
@@ -77,7 +77,7 @@ Choose the authentication pattern that matches your integration:
 ## Migration
 
 <Card title="Deprecated routes" icon="triangle-exclamation" href="/integration/deprecated">
-  Migration guide for removed endpoints: signer proxy (410), synchronous ingest (410), and deprecated credits/subscriptions.
+  Migration guide for removed endpoints: auth/api-key/*, app-level keys, GET validate, signer proxy, and credits/subscriptions.
 </Card>
 
 ## Discovery

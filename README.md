@@ -2,7 +2,7 @@
 
 Public integrator documentation for PymtHouse. Production URL: **https://docs.pymthouse.com**.
 
-This repository is the **Mintlify site root** (`docs.json` lives here). The main application and canonical contract markdown live in the **[pymthouse](https://github.com/eliteprox/pymthouse)** monorepo.
+This repository is the **Mintlify site root** (`docs.json` lives here). The main application and canonical contract markdown live in the **[pymthouse](https://github.com/pymthouse/pymthouse)** monorepo.
 
 ## Prerequisites
 
@@ -40,6 +40,10 @@ npm run validate
 Canonical contract text for code review still lives in the pymthouse repo:
 
 - `docs/builder-api.md`
-- `docs/naap-oidc-integration.md`
 
-When those files change, update the matching pages under `integration/` in this repository in the same release cycle (same PR on each repo, or coordinated merges).
+When that file changes, update the matching pages under `integration/` and `api-reference/` in this repository in the same release cycle (same PR on each repo, or coordinated merges).
+
+Machine-readable endpoints are also available on every deployment:
+
+- `GET /api/v1/openapi.json`
+- `GET /api/v1/docs` (Scalar UI)
