@@ -1,12 +1,16 @@
 ---
 title: App manifest
-description: Read and update your app's network capability manifest — the set of pipeline/model combinations discoverable through PymtHouse. Supports ETag caching and SDK helpers.
+description: Network capability manifest for pipeline/model exclusions. GET returns a fail-open stub; PUT writes Network Price exclusions. Not on the active Builder guides nav — see Plans and Deprecated routes.
 ---
 
-The **app manifest** defines which pipeline/model combinations are discoverable for your app through the PymtHouse network. It is expressed as a **subtractive** allowlist: the full NaaP pipeline catalog minus any `excludedCapabilities` you configure is what integrators and end-users can discover.
+The **app manifest** routes expose network capability exclusions for your app (Network Price plan). The signing hot path does **not** enforce the manifest.
 
 <Note>
-  **`GET .../manifest` behavior change:** The GET endpoint currently returns a **fail-open stub** (`capabilities: []`, `excludedCapabilities: []`, `manifestVersion: "empty"`) rather than the fully-resolved capability list. `PUT .../manifest` still resolves and returns the full manifest after writing exclusions. The manifest is not enforced on the signing hot path — direct DMZ signing does not consult it.
+  This page is kept for reference but is not linked in the main navigation. Prefer the **Plans / Network Price** UI for exclusion management. See [Deprecated routes](/integration/deprecated) and [Plans](/integration/plans).
+</Note>
+
+<Note>
+  **`GET .../manifest`:** Returns a fixed fail-open stub (`capabilities: []`, `excludedCapabilities: []`, `manifestVersion: "empty"`) without NaaP resolution. **`PUT .../manifest`** still updates Network Price exclusions and returns the fully resolved manifest. App metadata at `GET /api/v1/apps/{clientId}` may include `links.manifest`.
 </Note>
 
 ## Endpoints

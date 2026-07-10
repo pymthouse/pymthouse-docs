@@ -1,9 +1,26 @@
 ---
 title: Deprecated routes and migrations
-description: Migration guide for removed endpoints. The hosted signer proxy, synchronous signed-ticket ingest, and legacy subscription and credits endpoints have been replaced.
+description: Migration guide for removed endpoints in PymtHouse 0.3.x. Use the canonical replacements below.
 ---
 
-This page documents endpoints that have been **removed** (returning `410 Gone`) or **deprecated** in PymtHouse v0.2.x. Follow the migration steps to update your integration.
+This page documents endpoints that have been **removed** or **deprecated**. Follow the migration steps to update your integration to the PymtHouse **0.3.x** contract.
+
+---
+
+## Breaking changes (API cleanup)
+
+| Removed | Replacement |
+| --- | --- |
+| `GET /api/v1/auth/validate` | `POST /api/v1/auth/validate` with `{ "key": "pmth_…" }` (`BPP_VALIDATE_V2=1`) |
+| `GET` / `POST` / `DELETE /api/v1/subscriptions` | `POST /api/v1/apps/{clientId}/users`, `GET …/users/{externalUserId}/subscription`, `POST …/allowances` |
+| `POST /api/v1/apps/{clientId}/usage/signed-tickets` | Kafka `create_signed_ticket` → OpenMeter collector (no HTTP ingest) |
+| `GET` / `POST` / `DELETE /api/v1/apps/{clientId}/keys` | Per-user keys: `…/users/{externalUserId}/keys` |
+| `…/users/{externalUserId}/credits` | `…/users/{externalUserId}/allowances` |
+| Dashboard BFF `POST /api/pymthouse/keys/exchange` (not served by pymthouse) | `POST /api/v1/apps/{clientId}/oidc/token` |
+| `POST /api/v1/apps/{clientId}/auth/api-key/signer-session` | `POST /api/v1/apps/{clientId}/oidc/token` (form `subject_token=pmth_*`) |
+| `POST /api/v1/apps/{clientId}/auth/api-key/token` | `POST /api/v1/apps/{clientId}/oidc/token` or M2M `…/users/{externalUserId}/token` |
+
+M2M secret rotation remains at `POST /api/v1/apps/{clientId}/credentials` (provider session).
 
 ---
 
@@ -108,30 +125,63 @@ curl -sS \
 
 ---
 
-## Subscription CRUD removed
-
-**Affected routes:**
+## Auth validate: GET → POST
 
 | Route | Status | Replacement |
 | --- | --- | --- |
-| `POST /api/v1/subscriptions` | `410 Gone` | Use `POST .../plans` + OpenMeter checkout |
-| `DELETE /api/v1/subscriptions` | `410 Gone` | Use `DELETE .../plans?planId=` |
-| `GET /api/v1/subscriptions` | Deprecated (returns legacy cache rows) | Use `GET .../plans` or `GET .../users/{id}/subscription` |
+| `GET /api/v1/auth/validate` | Removed | `POST /api/v1/auth/validate` with JSON `{ "key": "pmth_…" }` |
 
-Manage subscriptions through the plans CRUD API (dashboard session) or the OpenMeter billing checkout flow. See [Plans](/integration/plans) and [Allowances](/integration/allowances).
+Requires `BPP_VALIDATE_V2=1`. Inspect the live response schema at `GET /api/v1/openapi.json`.
+
+---
+
+## App-level API keys removed
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `GET` / `POST` / `DELETE /api/v1/apps/{clientId}/keys` | Removed | `…/users/{externalUserId}/keys` |
+
+Issue and manage keys per user. Presented form is `app_<clientId>.pmth_<hex>`. See [API keys](/integration/api-keys).
+
+---
+
+## API key exchange routes removed
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `POST .../auth/api-key/token` | Removed | `POST .../oidc/token` (API key as `subject_token`) or M2M `…/users/{id}/token` |
+| `POST .../auth/api-key/signer-session` | Removed | `POST .../oidc/token` (form `subject_token=pmth_*`) |
+| Dashboard BFF `POST /api/pymthouse/keys/exchange` | Not served by pymthouse | `POST /api/v1/apps/{clientId}/oidc/token` |
+
+```bash
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=pmth_..." \
+  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/oidc/token"
+```
+
+---
+
+## Subscription CRUD removed
+
+| Route | Status | Replacement |
+| --- | --- | --- |
+| `POST /api/v1/subscriptions` | `410 Gone` | `POST .../users` (auto-Starter) + OpenMeter checkout / plans |
+| `DELETE /api/v1/subscriptions` | `410 Gone` | `DELETE .../plans?planId=` or subscription management via Plans |
+| `GET /api/v1/subscriptions` | Deprecated / removed | `GET .../plans` or `GET .../users/{id}/subscription` |
+
+See [Plans](/integration/plans) and [Allowances](/integration/allowances).
 
 ---
 
 ## Deprecated `credits` alias
 
-**Affected routes:**
-
 | Route | Status | Replacement |
 | --- | --- | --- |
 | `GET .../users/{id}/credits` | Deprecated alias | `GET .../users/{id}/allowances` |
-| `POST .../users/{id}/credits` | Removed / redirects | `POST .../users/{id}/allowances` |
-
-The `credits` endpoints re-export the `allowances` endpoints. The `POST` route has been removed from PymtHouse. Update all references:
+| `POST .../users/{id}/credits` | Removed | `POST .../users/{id}/allowances` |
 
 ```diff
 - GET /api/v1/apps/{clientId}/users/{externalUserId}/credits
@@ -153,37 +203,33 @@ SDK:
 
 ---
 
-## App manifest routes deprecated
-
-**Affected routes:**
+## Network capability manifest
 
 | Route | Status |
 | --- | --- |
-| `GET /api/v1/apps/{clientId}/manifest` | Deprecated — returns fail-open stub only |
-| `PUT /api/v1/apps/{clientId}/manifest` | Deprecated |
+| `GET /api/v1/apps/{clientId}/manifest` | Still available — returns a fixed fail-open stub (`capabilities: []`, `manifestVersion: "empty"`) without NaaP resolution |
+| `PUT /api/v1/apps/{clientId}/manifest` | Still available — writes Network Price exclusions; response is the fully resolved manifest |
 
-The manifest API was used to configure discoverable pipeline/model combinations (subtractive exclusions). The signing hot path no longer enforces capability restrictions; `GET .../manifest` returns a fail-open stub (`capabilities: []`) rather than a resolved list. Manage capability exclusions through the **Plans UI** instead.
+The signing hot path no longer enforces capability restrictions from the manifest. Prefer the **Plans / Network Price** UI for exclusion management. `GET .../manifest` is still linked from `GET /api/v1/apps/{clientId}` (`links.manifest`) for integrators that poll the stub.
 
-**SDK methods deprecated:**
+**SDK methods:**
 
-| Method | Replacement |
+| Method | Notes |
 | --- | --- |
-| `getAppManifest({ ifNoneMatch? })` | Plans UI |
-| `parseAppManifestResponse(raw)` | N/A |
-| `computeManifestRevision(parsed)` | N/A |
+| `getAppManifest({ ifNoneMatch? })` | Prefer Plans UI / Network Price for capability management |
+| `parseAppManifestResponse(raw)` | Legacy helper |
+| `computeManifestRevision(parsed)` | Legacy helper |
 
 ---
 
 ## Deprecated discovery profiles
-
-**Affected routes:**
 
 | Route | Status |
 | --- | --- |
 | `GET/POST .../discovery-profiles` | Legacy — still functional, not removed |
 | `GET/PUT/DELETE .../discovery-profiles/{id}` | Legacy — still functional, not removed |
 
-Discovery profiles are a legacy mechanism for expressing pipeline/model capability sets on plans. They remain functional for backward compatibility but new integrations should use the **Plans UI** for network capability management.
+Discovery profiles remain for backward compatibility. New integrations should manage network capabilities via **Network Price** exclusions (`PUT .../manifest` or the Plans UI).
 
 ---
 
@@ -194,15 +240,19 @@ Discovery profiles are a legacy mechanism for expressing pipeline/model capabili
 | `POST /api/signer/generate-live-payment` | `410 Gone` | `createDirectSignerProxyHandler` + DMZ |
 | `POST /api/signer/sign-orchestrator-info` | `410 Gone` | Direct DMZ |
 | `POST /api/signer/sign-byoc-job` | `410 Gone` | Direct DMZ |
-| `GET /api/signer/discover-orchestrators` | `410 Gone` | Plans UI |
-| `POST .../usage/signed-tickets` | `410 Gone` | Kafka async metering (no replacement) |
-| `POST /api/v1/subscriptions` | `410 Gone` | Plans CRUD + checkout |
+| `GET /api/signer/discover-orchestrators` | `410 Gone` | Plans / Network Price UI |
+| `POST .../usage/signed-tickets` | `410 Gone` | Kafka async metering (no HTTP replacement) |
+| `GET /api/v1/auth/validate` | Removed | `POST /api/v1/auth/validate` |
+| `GET/POST/DELETE .../apps/{clientId}/keys` | Removed | `…/users/{id}/keys` |
+| `POST .../auth/api-key/token` | Removed | `POST .../oidc/token` or `…/users/{id}/token` |
+| `POST .../auth/api-key/signer-session` | Removed | `POST .../oidc/token` |
+| Dashboard BFF keys/exchange | Not on pymthouse | `POST .../oidc/token` |
+| `POST /api/v1/subscriptions` | `410 Gone` | Users + plans / checkout |
 | `DELETE /api/v1/subscriptions` | `410 Gone` | Plans CRUD |
 | `POST .../users/{id}/credits` | Removed | `POST .../users/{id}/allowances` |
 | `GET .../users/{id}/credits` | Deprecated alias | `GET .../users/{id}/allowances` |
 | `getUserCredits()` SDK method | Deprecated | `getUserAllowances()` |
 | `grantUserCredits()` SDK method | Deprecated | `grantUserAllowance()` |
 | `ingestSignedTicket()` SDK method | Legacy | No direct replacement (Kafka handles metering) |
-| `GET .../manifest` | Deprecated | Plans UI |
-| `PUT .../manifest` | Deprecated | Plans UI |
-| `getAppManifest()` SDK method | Deprecated | Plans UI |
+| `GET .../manifest` | Fail-open stub | Network Price / Plans UI |
+| `PUT .../manifest` | Writes exclusions | Network Price / Plans UI |

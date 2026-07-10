@@ -29,15 +29,18 @@ OAuth 2.0 draws a hard line between public clients (those that cannot keep a sec
 
 Separating them also means that rotating the M2M secret never affects active device sessions, and that a compromised public `client_id` does not expose any server-side credential.
 
-## API keys (`pmth_*`)
+## Credential types (do not mix)
 
-In addition to short-lived JWTs, PymtHouse issues **long-lived opaque API keys** prefixed `pmth_*`. These are used for:
+| Prefix | Role | RFC usage |
+| --- | --- | --- |
+| `pmth_<hex>` | Per-app-user **API key** (stored / hashed) | `subject_token` on `POST /api/v1/apps/{clientId}/oidc/token` |
+| `app_<clientId>.pmth_<hex>` | **Presented** API key (issuance + remote-signer Bearer) | Same as bare `pmth_*`; prefix routes to the app exchange URL |
+| `pmth_cs_<hex>` | Confidential **M2M client secret** | HTTP Basic with `m2m_…` — never as `subject_token` |
+| `app_…` / `m2m_…` | Public / confidential OAuth client ids | Path params and token endpoint `client_id` |
 
-- **M2M client secrets** — The `pmth_cs_…` secret on the confidential client, used for HTTP Basic auth on Builder API calls.
-- **Per-user API keys** — `pmth_ak_…` keys created via `POST .../users/{externalUserId}/keys`, exchangeable for short-lived JWTs or signer sessions.
-- **App-level API keys** — `pmth_ak_…` keys tied to a subscription, created via `POST .../keys`.
+Per-user API keys are created with `POST .../users/{externalUserId}/keys`. Newly issued keys are returned as `app_<clientId>.pmth_<hex>`. App-level keys at `/api/v1/apps/{clientId}/keys` were removed.
 
-API keys are long-lived and must be stored securely server-side. Exchange them for short-lived JWTs on demand rather than using them directly on the signing hot path. See [API keys](/integration/api-keys) for the exchange flows.
+API keys are long-lived and must be stored securely server-side. Exchange them for a short-lived **`SignerSession`** via `POST /api/v1/apps/{clientId}/oidc/token` rather than using them as long-lived Bearer tokens on the signing hot path. See [API keys](/integration/api-keys).
 
 ## Environment variables
 
@@ -115,4 +118,4 @@ Clients are created and managed through the developer dashboard or API. `npm run
 - Confirm that `PYMTHOUSE_PUBLIC_CLIENT_ID` is the `app_…` public id wherever it appears in device or browser flows.
 - Add only the scopes listed in the table above to each client; remove any default placeholder scopes added by tooling.
 - Rotate M2M secrets through the credentials endpoint; update the secret in your secret manager without touching the public client.
-- For per-user API key flows, use `POST .../users/{externalUserId}/keys` — see [API keys](/integration/api-keys).
+- For per-user API key flows, use `POST .../users/{externalUserId}/keys`, then exchange at `POST .../oidc/token` — see [API keys](/integration/api-keys).

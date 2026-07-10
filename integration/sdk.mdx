@@ -84,12 +84,15 @@ All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicCl
 | Method | Description |
 | --- | --- |
 | `mintUserAccessToken(input)` | `POST .../users/{id}/token` — short-lived JWT. Requires `users:token`. |
-| `exchangeForSignerSession({ userJwt, resource? })` | RFC 8693: user JWT → opaque `pmth_*` signer session. |
-| `mintUserSignerSessionToken(input)` | Mint user JWT + exchange in one call. |
+| `exchangeForSignerSession({ userJwt })` | RFC 8693 via `POST .../apps/{clientId}/oidc/token` — user JWT → `SignerSession`. |
+| `mintUserSignerSessionToken(input)` | Mint user JWT + app-scoped exchange in one call. |
 | `mintSignerSessionForExternalUser(input)` | Upsert user + mint + exchange workflow. |
 | `createSignerSessionToken({ userJwt? })` | Exchange or fall back to machine token. |
-| `exchangeApiKeyForUserAccessToken({ apiKey })` | `POST .../auth/api-key/token` — API key → short-lived JWT. |
-| `exchangeApiKeyForSignerSession({ apiKey, facadeUrl? })` | API key → opaque signer session. |
+| `exchangeApiKeyForSignerSession({ apiKey })` | API key as `subject_token` on `POST .../oidc/token` → `SignerSession`. |
+
+<Note>
+  Prefer the HTTP contract in [API keys](/integration/api-keys) and [Token exchange](/integration/token-exchange). Older SDK helpers that call `…/auth/api-key/token`, `…/auth/api-key/signer-session`, or a dashboard `facadeUrl` target routes that were removed in PymtHouse 0.3.x.
+</Note>
 
 ### Device flow
 
@@ -158,7 +161,7 @@ const session = await client.mintUserSignerSessionToken({
   externalUserId: "naap-user-123",
   scope: "sign:job",
 });
-// session.access_token — opaque pmth_… bearer for the DMZ
+// session.access_token — signer JWT for the DMZ
 
 // Option 3: upsert user + mint + exchange in one call
 const session = await client.mintSignerSessionForExternalUser({
