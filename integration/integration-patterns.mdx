@@ -14,7 +14,7 @@ npm install @pymthouse/builder-sdk
 # Node ≥ 20 required
 ```
 
-Set these four environment variables in your backend. **Never expose the M2M credentials client-side.**
+Set these four required environment variables in your backend. **Never expose the M2M credentials client-side.** The fifth variable is optional and applies to local development only.
 
 ```bash
 PYMTHOUSE_ISSUER_URL=https://your-pymthouse.example/api/v1/oidc
@@ -76,12 +76,12 @@ User logs in → your backend authenticates → POST /users (upsert) → POST /u
 
 ### Step 1: Mint a user JWT (lazy-provision pattern)
 
-The most robust pattern — used by the reference dashboard — is to attempt the token mint first and only provision the user on a `404`:
+Use `ensureUserAndMintToken` — it attempts the mint first and auto-provisions the user on `404 / not_found`:
 
 ```ts
 // lib/pymthouse.ts
 import "server-only";
-import { PmtHouseClient, PmtHouseError } from "@pymthouse/builder-sdk";
+import { PmtHouseClient } from "@pymthouse/builder-sdk";
 
 export function createClient() {
   return new PmtHouseClient({
@@ -99,18 +99,8 @@ export function createClient() {
  */
 export async function mintUserToken(externalUserId: string): Promise<string> {
   const client = createClient();
-  try {
-    const result = await client.mintUserAccessToken({ externalUserId });
-    return result.access_token;
-  } catch (err) {
-    if (err instanceof PmtHouseError && err.status === 404 && err.code === "not_found") {
-      // First time we've seen this user — provision and retry
-      await client.upsertAppUser({ externalUserId });
-      const result = await client.mintUserAccessToken({ externalUserId });
-      return result.access_token;
-    }
-    throw err;
-  }
+  const result = await client.ensureUserAndMintToken({ externalUserId });
+  return result.access_token;
 }
 ```
 
@@ -319,22 +309,15 @@ const token = await pollDeviceToken({
 
 ### Step 3: Your backend binds the device grant (Option B)
 
-When a user authenticates at your login page, your backend binds the pending device grant so the CLI poll receives the token. This is a two-step operation: mint a user JWT, then exchange it to bind the grant:
+When a user authenticates at your login page, your backend binds the pending device grant so the CLI poll receives the token. `approveDeviceLogin` handles upsert + mint + RFC 8693 exchange in one call:
 
 ```ts
 // Your login callback handler (server-side)
-import { PmtHouseClient } from "@pymthouse/builder-sdk";
 import { createClient } from "@/lib/pymthouse"; // your factory from Setup above
 
 export async function handleDeviceApproval(userId: string, userCode: string) {
   const client = createClient();
 
-  // Step A: mint a user JWT for this user
-  await client.upsertAppUser({ externalUserId: userId }); // ensure provisioned
-  const { access_token: userJwt } = await client.mintUserAccessToken({ externalUserId: userId });
-
-  // Step B: exchange the JWT to bind the pending device grant
-  // approveDeviceLogin wraps the RFC 8693 token exchange
   await client.approveDeviceLogin({
     externalUserId: userId,
     userCode,                   // the ABCD-EFGH code the CLI received
@@ -345,7 +328,8 @@ export async function handleDeviceApproval(userId: string, userCode: string) {
 ```
 
 ```bash
-# curl equivalent (two-step: mint JWT then bind grant)
+# curl equivalent of what approveDeviceLogin does under the hood
+# (two-step: mint JWT then bind grant)
 
 # Step A: mint user JWT
 USER_JWT=$(curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
