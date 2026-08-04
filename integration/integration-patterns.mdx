@@ -62,7 +62,7 @@ Pick the pattern that matches your architecture:
 
 ---
 
-## Pattern 1: SaaS app — per-user sessions
+## Pattern 1: SaaS app — per-user sessions {#pattern-1-saas-app-per-user-sessions}
 
 **When to use:** Your app has logged-in users. You want to issue a fresh JWT for each user session and track usage per user for billing.
 
@@ -232,7 +232,7 @@ See [Signer routing](/integration/signer-routing) for the DMZ URL, webhook confi
 
 ---
 
-## Pattern 2: CLI tool — device flow
+## Pattern 2: CLI tool — device flow {#pattern-2-cli-tool-device-flow}
 
 **When to use:** You're building a CLI, daemon, or any tool that runs in a terminal. Users should authenticate with their browser, not type in API keys.
 
@@ -269,7 +269,15 @@ echo "Or go to ${BASE_URL}/oidc/device and enter: ${USER_CODE}"
 Start polling immediately and wait for the user to complete login:
 
 ```bash
+EXPIRES_IN=$(echo "$RESPONSE" | jq -r '.expires_in // 600')
+DEADLINE=$(( $(date +%s) + EXPIRES_IN ))
+
 while true; do
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    echo "Device code expired. Run login again."
+    exit 1
+  fi
+
   POLL=$(curl -sS \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
@@ -277,12 +285,15 @@ while true; do
     -d "client_id=${PUBLIC_CLIENT_ID}" \
     "${BASE_URL}/api/v1/oidc/token")
 
-  ERROR=$(echo $POLL | jq -r '.error // empty')
+  ERROR=$(echo "$POLL" | jq -r '.error // empty')
 
   if [ -z "$ERROR" ]; then
-    ACCESS_TOKEN=$(echo $POLL | jq -r '.access_token')
-    echo "✓ Logged in"
-    break
+    ACCESS_TOKEN=$(echo "$POLL" | jq -r '.access_token // empty')
+    if [ -n "$ACCESS_TOKEN" ]; then
+      echo "✓ Logged in"
+      break
+    fi
+    sleep 5
   elif [ "$ERROR" = "authorization_pending" ]; then
     sleep 5
   elif [ "$ERROR" = "slow_down" ]; then
@@ -368,7 +379,7 @@ Before this works end-to-end:
 
 ---
 
-## Pattern 3: Metered billing — charge users
+## Pattern 3: Metered billing — charge users {#pattern-3-metered-billing-charge-users}
 
 **When to use:** You want to charge users based on their AI usage. You offer a free tier, paid plans, and want to collect payment via Stripe.
 

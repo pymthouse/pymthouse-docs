@@ -151,7 +151,7 @@ Plans, Stripe Connect, and billing mutation routes require a logged-in dashboard
 
 ### Tenant boundary
 
-All endpoints enforce that the authenticated M2M client belongs to the same app as the `{clientId}` in the URL path. Mismatches return **`404 Not Found`** — not `401` or `403` — to prevent app id enumeration.
+M2M requests to app-scoped endpoints enforce that the authenticated M2M client belongs to the same app as the `{clientId}` in the URL path. Mismatches return **`404 Not Found`** — not `401` or `403` — to prevent app id enumeration. Session and user-JWT endpoints use different tenant controls.
 
 ### Wei values
 
@@ -159,7 +159,13 @@ All `*Wei` fields are **decimal strings**, not numbers. They may exceed `Number.
 
 ```ts
 const fee = BigInt(response.totals.totalFeeWei);
-const eth = Number(fee) / 1e18;
+const weiPerEth = 10n ** 18n;
+const whole = fee / weiPerEth;
+const fraction = (fee % weiPerEth)
+  .toString()
+  .padStart(18, "0")
+  .replace(/0+$/, "");
+const eth = fraction ? `${whole}.${fraction}` : whole.toString();
 ```
 
 ### USD micros

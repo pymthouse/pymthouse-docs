@@ -66,15 +66,15 @@ Fix: Remove `admin` from the requested scope.
 **Diagnostic:**
 
 ```bash
-# Check what scopes the M2M client has by inspecting the machine token
-MACHINE_TOKEN=$(curl -sS \
+# Check what scopes the M2M client has by inspecting the token response
+TOKEN_RESPONSE=$(curl -sS \
   -d "grant_type=client_credentials" \
   -d "client_id=${M2M_ID}" \
   -d "client_secret=${M2M_SECRET}" \
   -d "scope=users:token" \
   "${BASE_URL}/api/v1/oidc/token")
 
-echo $MACHINE_TOKEN | jq .  # look for "error": "invalid_scope" vs access_token
+echo "$TOKEN_RESPONSE" | jq .  # look for "error": "invalid_scope" vs access_token
 ```
 
 ---

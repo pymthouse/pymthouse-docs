@@ -149,9 +149,14 @@ const apiKeyExchange = createApiKeyExchangeHandler({
 
 ## Identity webhook (`@livepeer/clearinghouse-identity-webhook`)
 
-go-livepeer calls `POST /authorize` (configured via `-remoteSignerWebhookUrl`) for every signing request to verify the end-user's credentials and receive an `auth_id` for usage attribution.
+go-livepeer calls your identity webhook (configured via `-remoteSignerWebhookUrl`) for every signing request to verify the end-user's credentials and receive an `auth_id` for usage attribution. Set the flag to the exact path for your deployment:
 
-Pymthouse embeds the clearinghouse package at `POST /webhooks/remote-signer`. The same package runs as a standalone sidecar in the clearinghouse compose stack.
+| Deployment | `-remoteSignerWebhookUrl` |
+| --- | --- |
+| **Embedded in PymtHouse** | `https://<your-pymthouse-host>/webhooks/remote-signer` |
+| **Standalone clearinghouse sidecar** | `https://<webhook-host>/authorize` |
+
+PymtHouse embeds the clearinghouse package at `POST /webhooks/remote-signer`. The same package runs as a standalone sidecar (listening at `POST /authorize`) in the clearinghouse compose stack.
 
 ```mermaid
 sequenceDiagram
@@ -220,7 +225,7 @@ export async function POST(request: Request) {
 
 - `WEBHOOK_SECRET` authenticates that the signing request came from **your** go-livepeer DMZ instance. Rotate it if the DMZ is compromised.
 - The end-user `EndUserAuthVerifier` authenticates the **user** making the signing request. Keep the two auth layers separate — webhook secret is transport; end-user auth is identity.
-- Configure the go-livepeer DMZ with `-remoteSignerWebhookUrl` pointing to your `/authorize` endpoint and `-remoteSignerWebhookSecret` matching `WEBHOOK_SECRET`.
+- Configure the go-livepeer DMZ with `-remoteSignerWebhookUrl` pointing to your webhook path (`/webhooks/remote-signer` when embedded in PymtHouse, `/authorize` for the standalone sidecar) and `-remoteSignerWebhookSecret` matching `WEBHOOK_SECRET`.
 - The DMZ validates JWTs against the JWKS URL from `getSignerRouting()` — ensure `jwksUrl` is reachable from the DMZ host.
 
 ## Related guides
