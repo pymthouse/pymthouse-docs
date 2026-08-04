@@ -5,6 +5,55 @@ description: Three complete integration recipes — SaaS app with per-user billi
 
 Every PymtHouse integration is some combination of three primitives: **machine auth** (your backend talks to PymtHouse), **user provisioning** (you register end-users), and **JWT issuance** (you get signed tokens that gate AI requests). What varies is how users get into the system and how you charge them.
 
+## Setup: install the SDK and configure env vars
+
+All TypeScript examples below use the official Builder SDK. Install it first:
+
+```bash
+npm install @pymthouse/builder-sdk
+# Node ≥ 20 required
+```
+
+Set these four environment variables in your backend. **Never expose the M2M credentials client-side.**
+
+```bash
+PYMTHOUSE_ISSUER_URL=https://your-pymthouse.example/api/v1/oidc
+PYMTHOUSE_PUBLIC_CLIENT_ID=app_…     # starts with app_
+PYMTHOUSE_M2M_CLIENT_ID=m2m_…       # starts with m2m_
+PYMTHOUSE_M2M_CLIENT_SECRET=pmth_cs_…
+
+# Local dev only — set to 1 when issuer uses http://
+PYMTHOUSE_ALLOW_INSECURE_HTTP=
+```
+
+<Tip>
+  See the [Builder SDK reference](/integration/sdk) for the full API, subpath exports, and method signatures.
+</Tip>
+
+Then construct the client once per request lifecycle (server-side only):
+
+```ts
+// lib/pymthouse.ts
+import "server-only";
+import { PmtHouseClient } from "@pymthouse/builder-sdk";
+
+export function createClient() {
+  return new PmtHouseClient({
+    issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+    publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+    m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+    m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+    allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
+  });
+}
+```
+
+<Note>
+  `createPmtHouseClientFromEnv` from `@pymthouse/builder-sdk/env` reads these same variables automatically but may not handle `PYMTHOUSE_ALLOW_INSECURE_HTTP`. Use the explicit constructor above for local development to ensure `allowInsecureHttp` is set correctly.
+</Note>
+
+---
+
 Pick the pattern that matches your architecture:
 
 - [Pattern 1: SaaS app — per-user sessions](#pattern-1-saas-app-per-user-sessions) — Users log into your web app; each user gets their own metered allowance.
@@ -25,79 +74,98 @@ Pick the pattern that matches your architecture:
 User logs in → your backend authenticates → POST /users (upsert) → POST /users/{id}/token → JWT → AI request
 ```
 
-### Step 1: Provision the user on login
+### Step 1: Mint a user JWT (lazy-provision pattern)
 
-Call this when the user first signs up or logs in. The upsert is idempotent — safe to call on every login.
+The most robust pattern — used by the reference dashboard — is to attempt the token mint first and only provision the user on a `404`:
 
 ```ts
-// lib/pymthouse.ts (server-side only)
-import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+// lib/pymthouse.ts
+import "server-only";
+import { PmtHouseClient, PmtHouseError } from "@pymthouse/builder-sdk";
 
-const pmth = createPmtHouseClientFromEnv();
-
-export async function ensureUserProvisioned(userId: string, email: string) {
-  await pmth.upsertAppUser({
-    externalUserId: userId,
-    email,
-    status: "active",
+export function createClient() {
+  return new PmtHouseClient({
+    issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+    publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+    m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+    m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+    allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
   });
+}
+
+/**
+ * Mint a user access JWT. Auto-provisions the user on first call.
+ * scope defaults to "sign:job" server-side.
+ */
+export async function mintUserToken(externalUserId: string): Promise<string> {
+  const client = createClient();
+  try {
+    const result = await client.mintUserAccessToken({ externalUserId });
+    return result.access_token;
+  } catch (err) {
+    if (err instanceof PmtHouseError && err.status === 404 && err.code === "not_found") {
+      // First time we've seen this user — provision and retry
+      await client.upsertAppUser({ externalUserId });
+      const result = await client.mintUserAccessToken({ externalUserId });
+      return result.access_token;
+    }
+    throw err;
+  }
 }
 ```
 
+The lazy pattern means you never need a separate sign-up hook — users are provisioned on their first request. If you prefer eager provisioning (e.g. to pre-allocate balance), call `upsertAppUser` explicitly on sign-up:
+
+```ts
+// Eager provisioning (optional — e.g. on account creation)
+await client.upsertAppUser({ externalUserId: userId });
+// email and status are optional; PymtHouse accepts externalUserId alone
+```
+
 ```bash
-# curl equivalent
+# curl equivalent — eager provision
 curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
   -H "Content-Type: application/json" \
-  -d "{\"externalUserId\": \"${USER_ID}\", \"email\": \"${EMAIL}\", \"status\": \"active\"}" \
+  -d "{\"externalUserId\": \"${USER_ID}\"}" \
   "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/users"
-```
 
-### Step 2: Mint a JWT for each request
-
-Issue a short-lived token just before the user makes an AI request. Do not cache these across users or sessions — each call produces a fresh token scoped to exactly one user.
-
-```ts
-export async function getUserSigningToken(userId: string): Promise<string> {
-  const token = await pmth.mintUserAccessToken({
-    externalUserId: userId,
-    scope: "sign:job",
-  });
-  return token.access_token;
-}
-```
-
-```bash
-# curl equivalent
+# curl equivalent — mint JWT (scope defaults to sign:job)
 curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
   -H "Content-Type: application/json" \
-  -d '{ "scope": "sign:job" }' \
+  -d '{}' \
   "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/users/${USER_ID}/token" \
   | jq -r '.access_token'
 ```
 
-### Step 3: Gate requests on balance
+### Step 2: Gate requests on balance
 
 Check the user's balance before allowing the request. This prevents over-billing and gives you a clean error surface.
 
 ```ts
 export async function assertUserHasBalance(userId: string) {
-  const balance = await pmth.getUsageBalance(userId);
+  const client = createClient();
+  const balance = await client.getUsageBalance(userId);
   if (!balance.hasAccess) {
     throw new Error("Insufficient balance. Please upgrade your plan.");
   }
 }
 ```
 
-### Step 4: Show usage in your dashboard
+### Step 3: Show usage in your dashboard
 
 ```ts
-// Per-user usage breakdown
-const usage = await pmth.getUsage({ groupBy: "user" });
+// Per-user usage breakdown for a specific user
+const client = createClient();
+const usage = await client.fetchUsageForExternalUser({
+  externalUserId: "user-123",
+  startDate: "2026-06-01T00:00:00.000Z",
+  endDate: "2026-06-30T23:59:59.999Z",
+});
+console.log("Requests:", usage.requestCount);
+console.log("Fee (wei):", usage.feeWei);
 
-// Find a specific user's usage
-const userRow = usage.byUser?.find(u => u.externalUserId === "user-123");
-console.log("Requests:", userRow?.requestCount);
-console.log("Fee (wei):", userRow?.feeWei);
+// App-wide breakdown across all users
+const appUsage = await client.getUsage({ groupBy: "user" });
 ```
 
 ### Next.js example: API route
@@ -105,30 +173,62 @@ console.log("Fee (wei):", userRow?.feeWei);
 ```ts
 // app/api/sign/route.ts
 import "server-only";
-import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
-
-const pmth = createPmtHouseClientFromEnv();
+import { PmtHouseError } from "@pymthouse/builder-sdk";
+import { createClient, mintUserToken } from "@/lib/pymthouse";
 
 export async function POST(req: Request) {
   const { userId } = await getSession(req); // your auth
 
-  // Check balance
-  const balance = await pmth.getUsageBalance(userId);
+  // Check balance before signing
+  const client = createClient();
+  const balance = await client.getUsageBalance(userId);
   if (!balance.hasAccess) {
     return Response.json({ error: "Insufficient balance" }, { status: 402 });
   }
 
-  // Mint user JWT
-  const { access_token } = await pmth.mintUserAccessToken({
-    externalUserId: userId,
-    scope: "sign:job",
-  });
+  // Mint user JWT (auto-provisions on first call)
+  const accessToken = await mintUserToken(userId);
 
   // Forward to AI service with the JWT
-  const result = await callAiService(access_token);
+  const result = await callAiService(accessToken);
   return Response.json(result);
 }
 ```
+
+### Signer sessions (Option A — clearinghouse direct mint)
+
+If your integration talks directly to the remote signer DMZ rather than a gateway, use `mintUserSignerToken` from `@pymthouse/builder-sdk/signer/server`. This mints a short-lived signer JWT and returns the user's balance in one call:
+
+```ts
+import "server-only";
+import { mintUserSignerToken, createSignerTokenManager } from "@pymthouse/builder-sdk/signer/server";
+
+// One-shot mint (no caching)
+const signerToken = await mintUserSignerToken({
+  issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+  m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+  m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+  externalUserId: "user-123",
+  allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
+});
+// signerToken.jwt — use as Bearer token at the DMZ
+// signerToken.balanceUsdMicros — current balance
+// signerToken.expiresAt — Unix timestamp
+
+// With TTL caching across requests (recommended for production)
+const tokenManager = createSignerTokenManager({
+  mint: async (publicClientId, externalUserId) =>
+    mintUserSignerToken({
+      issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+      m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+      m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+      externalUserId,
+      allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
+    }),
+});
+```
+
+See [Signer routing](/integration/signer-routing) for the DMZ URL, webhook config, and identity webhook setup.
 
 ---
 
@@ -208,22 +308,28 @@ const token = await pollDeviceToken({
 
 ### Step 3: Your backend binds the device grant (Option B)
 
-When a user authenticates at your login page, your backend binds the pending device grant so the CLI poll receives the token:
+When a user authenticates at your login page, your backend binds the pending device grant so the CLI poll receives the token. This is a two-step operation: mint a user JWT, then exchange it to bind the grant:
 
 ```ts
 // Your login callback handler (server-side)
-import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
-
-const pmth = createPmtHouseClientFromEnv();
+import { PmtHouseClient } from "@pymthouse/builder-sdk";
+import { createClient } from "@/lib/pymthouse"; // your factory from Setup above
 
 export async function handleDeviceApproval(userId: string, userCode: string) {
-  // This mints a user JWT and exchanges it to bind the device grant
-  await pmth.approveDeviceLogin({
+  const client = createClient();
+
+  // Step A: mint a user JWT for this user
+  await client.upsertAppUser({ externalUserId: userId }); // ensure provisioned
+  const { access_token: userJwt } = await client.mintUserAccessToken({ externalUserId: userId });
+
+  // Step B: exchange the JWT to bind the pending device grant
+  // approveDeviceLogin wraps the RFC 8693 token exchange
+  await client.approveDeviceLogin({
     externalUserId: userId,
-    userCode,                  // the ABCD-EFGH code the CLI received
+    userCode,                   // the ABCD-EFGH code the CLI received
     publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
   });
-  // After this call, the CLI's next poll returns access_token
+  // The CLI's next poll will now return access_token
 }
 ```
 

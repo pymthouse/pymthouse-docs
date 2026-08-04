@@ -160,18 +160,34 @@ You have the core flow working. Now wire it into your product:
 
 ### SDK equivalent
 
-The entire quickstart in TypeScript using the Builder SDK:
+The entire quickstart in TypeScript using the Builder SDK. See [Builder SDK](/integration/sdk) for install instructions and the full method reference.
 
 ```ts
-import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
+import { PmtHouseClient, PmtHouseError } from "@pymthouse/builder-sdk";
 
-const client = createPmtHouseClientFromEnv();
-
-// Steps 2–3: upsert user, mint JWT, and exchange for signer session in one call
-const session = await client.mintSignerSessionForExternalUser({
-  externalUserId: "user-123",
-  email: "alice@example.com",
+const client = new PmtHouseClient({
+  issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+  m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+  m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+  // Set to true for local dev when issuer URL is http://
+  allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
 });
+
+// Steps 2–3: mint user JWT (auto-provisions on first call via 404-retry)
+async function mintUserToken(externalUserId: string): Promise<string> {
+  try {
+    const { access_token } = await client.mintUserAccessToken({ externalUserId });
+    return access_token;
+  } catch (err) {
+    if (err instanceof PmtHouseError && err.status === 404 && err.code === "not_found") {
+      await client.upsertAppUser({ externalUserId });
+      const { access_token } = await client.mintUserAccessToken({ externalUserId });
+      return access_token;
+    }
+    throw err;
+  }
+}
 
 // Step 4: check balance before dispatching
 const balance = await client.getUsageBalance("user-123");
@@ -179,6 +195,7 @@ if (!balance.hasAccess) {
   throw new Error("Insufficient balance — top up or upgrade plan");
 }
 
-// session.access_token is ready for the AI service
-console.log("Signer session:", session.access_token.slice(0, 20) + "...");
+// Step 3: mint the token
+const userJwt = await mintUserToken("user-123");
+console.log("User JWT:", userJwt.slice(0, 40) + "...");
 ```
