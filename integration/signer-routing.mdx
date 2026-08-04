@@ -1,13 +1,13 @@
 ---
 title: Signer routing
-description: Integrate directly with the go-livepeer remote signer DMZ. Fetch routing config, proxy signing requests, and handle the identity webhook using @pymthouse/builder-sdk/signer/server and /signer/webhook.
+description: Integrate directly with the go-livepeer remote signer DMZ. Fetch routing config, proxy signing requests, and handle the identity webhook using @pymthouse/builder-sdk/signer/server and @livepeer/clearinghouse-identity-webhook.
 ---
 
 Direct signer integration uses:
 
 1. **`GET .../signer/routing`** — fetch the DMZ URL and webhook URL for your app.
 2. **`@pymthouse/builder-sdk/signer/server`** — proxy signing requests directly to the remote signer DMZ with JWT minting.
-3. **`@pymthouse/builder-sdk/signer/webhook`** — handle go-livepeer identity webhook calls (`POST /authorize`) to authenticate end-users.
+3. **`@livepeer/clearinghouse-identity-webhook`** — handle go-livepeer identity webhook calls (`POST /authorize`) to authenticate end-users.
 
 ## Token lifecycle
 
@@ -147,9 +147,16 @@ const apiKeyExchange = createApiKeyExchangeHandler({
 
 ---
 
-## Identity webhook (`@pymthouse/builder-sdk/signer/webhook`)
+## Identity webhook (`@livepeer/clearinghouse-identity-webhook`)
 
-go-livepeer calls `POST /authorize` (configured via `-remoteSignerWebhookUrl`) for every signing request to verify the end-user's credentials and receive an `auth_id` for usage attribution.
+go-livepeer calls your identity webhook (configured via `-remoteSignerWebhookUrl`) for every signing request to verify the end-user's credentials and receive an `auth_id` for usage attribution. Set the flag to the exact path for your deployment:
+
+| Deployment | `-remoteSignerWebhookUrl` |
+| --- | --- |
+| **Embedded in PymtHouse** | `https://<your-pymthouse-host>/webhooks/remote-signer` |
+| **Standalone clearinghouse sidecar** | `https://<webhook-host>/authorize` |
+
+PymtHouse embeds the clearinghouse package at `POST /webhooks/remote-signer`. The same package runs as a standalone sidecar (listening at `POST /authorize`) in the clearinghouse compose stack.
 
 ```mermaid
 sequenceDiagram
@@ -163,89 +170,44 @@ sequenceDiagram
   App-->>Signer: 200 { auth_id }
 ```
 
-### Setup
+### Setup (embedded in your app)
 
 ```ts
-import {
-  createRemoteSignerAuthorizeHandler,
-  createOidcRemoteSignerWebhookConfig,
-} from "@pymthouse/builder-sdk/signer/webhook";
+import { handleAuthorize } from "@livepeer/clearinghouse-identity-webhook/protocol";
+import { createLegacyWebhookConfigFromEnv } from "@livepeer/clearinghouse-identity-webhook/legacy-env";
 
-const authorize = createRemoteSignerAuthorizeHandler(
-  createOidcRemoteSignerWebhookConfig({
-    webhookSecret: process.env.WEBHOOK_SECRET!,
-    jwtIssuer: process.env.JWT_ISSUER!,
-    jwtAudience: process.env.JWT_AUDIENCE!,
-    claimMapping: {
-      claimClientId: "azp",
-      usageSubjectType: "auth0_user_id",
-    },
-  }),
-);
-
-// Mount at your webhook URL:
 export async function POST(request: Request) {
-  return authorize(request);
+  return handleAuthorize(request, createLegacyWebhookConfigFromEnv(process.env));
 }
 ```
 
-### End-user auth adapters
+### End-user auth modes
 
-The webhook handler is split into two layers:
+Set `IDENTITY_AUTH_MODE` when running the standalone sidecar (`api_key` or `oidc`). For embedded Pymthouse routes, `createLegacyWebhookConfigFromEnv` maps legacy `JWT_*` / `CLAIM_*` env vars to OIDC verification.
 
-- **Transport auth** — validates the go-livepeer shared secret (`WEBHOOK_SECRET`) that proves the request came from your DMZ, not an arbitrary caller.
-- **End-user auth** (`EndUserAuthVerifier`) — validates the end-user's credential in the signing request and resolves it to a `UsageIdentity`.
-
-Four built-in adapters are provided:
-
-| Adapter | Import | Use case |
+| Mode | Package import | Use case |
 | --- | --- | --- |
-| **OIDC** (default) | `@pymthouse/builder-sdk/signer/webhook/adapters/oidc` | PymtHouse-issued JWTs or Auth0/OIDC tokens |
-| **API key** | `@pymthouse/builder-sdk/signer/webhook/adapters/api-key` | Resolve `pmth_*` API keys to a `UsageIdentity` |
-| **Trusted headers** | `@pymthouse/builder-sdk/signer/webhook/adapters/trusted-headers` | Reverse proxy that injects pre-authenticated user id |
-| **Composite** | `@pymthouse/builder-sdk/signer/webhook/adapters/composite` | First-match across multiple verifiers |
+| **OIDC** (Pymthouse default) | `legacy-env` + `JWT_ISSUER` | PymtHouse-issued JWTs or Auth0/OIDC tokens |
+| **API key** (sidecar) | `verifiers` + `createApiKeyVerifier` | Demo `sk_…` keys or custom key store |
+| **OIDC** (sidecar) | `verifiers` + `createEndUserVerifierFromEnv` | Auth0 / generic OIDC with `OIDC_*` env vars |
 
-#### API key adapter
+#### API key mode (sidecar)
 
 ```ts
-import { createApiKeyEndUserVerifier } from "@pymthouse/builder-sdk/signer/webhook/adapters/api-key";
-import { createRemoteSignerAuthorizeHandler } from "@pymthouse/builder-sdk/signer/webhook";
+import { handleAuthorize } from "@livepeer/clearinghouse-identity-webhook/protocol";
+import { createApiKeyVerifier } from "@livepeer/clearinghouse-identity-webhook/verifiers";
 
-const handler = createRemoteSignerAuthorizeHandler({
+const config = {
   webhookSecret: process.env.WEBHOOK_SECRET!,
-  endUserAuth: {
-    kind: "api-key",
-    verifier: createApiKeyEndUserVerifier({
-      issuer: process.env.JWT_ISSUER!,
-      resolveApiKey: async (key) => {
-        // Return UsageIdentity or null
-        const user = await db.findUserByApiKey(key);
-        return user
-          ? { identity: { auth_id: user.id, externalUserId: user.externalId }, expiry: null }
-          : null;
-      },
-    }),
-  },
-});
-```
-
-#### Custom verifier
-
-Implement the `EndUserAuthVerifier` interface for any custom auth scheme:
-
-```ts
-import type { EndUserAuthVerifier } from "@pymthouse/builder-sdk/signer/webhook";
-
-const customVerifier: EndUserAuthVerifier = {
-  kind: "custom",
-  verify: async ({ authorization, payload, request }) => {
-    // Validate credentials, return UsageIdentity
-    return {
-      identity: { auth_id: "user-abc", externalUserId: "user-123" },
-      expiry: Math.trunc(Date.now() / 1000) + 300,
-    };
-  },
+  endUserAuth: createApiKeyVerifier({
+    issuer: process.env.IDENTITY_ISSUER!,
+    resolveApiKey: async (key) => (await lookup(key)) ?? null,
+  }),
 };
+
+export async function POST(request: Request) {
+  return handleAuthorize(request, config);
+}
 ```
 
 ### Webhook environment variables
@@ -263,7 +225,7 @@ const customVerifier: EndUserAuthVerifier = {
 
 - `WEBHOOK_SECRET` authenticates that the signing request came from **your** go-livepeer DMZ instance. Rotate it if the DMZ is compromised.
 - The end-user `EndUserAuthVerifier` authenticates the **user** making the signing request. Keep the two auth layers separate — webhook secret is transport; end-user auth is identity.
-- Configure the go-livepeer DMZ with `-remoteSignerWebhookUrl` pointing to your `/authorize` endpoint and `-remoteSignerWebhookSecret` matching `WEBHOOK_SECRET`.
+- Configure the go-livepeer DMZ with `-remoteSignerWebhookUrl` pointing to your webhook path (`/webhooks/remote-signer` when embedded in PymtHouse, `/authorize` for the standalone sidecar) and `-remoteSignerWebhookSecret` matching `WEBHOOK_SECRET`.
 - The DMZ validates JWTs against the JWKS URL from `getSignerRouting()` — ensure `jwksUrl` is reachable from the DMZ host.
 
 ## Related guides

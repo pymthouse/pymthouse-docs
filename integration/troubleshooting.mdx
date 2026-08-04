@@ -1,0 +1,255 @@
+---
+title: Troubleshooting
+description: Common errors, diagnostic checklists, and fixes for PymtHouse integrations.
+---
+
+## Quick diagnostics
+
+When something fails, work through this checklist first before diving into specific errors:
+
+<AccordionGroup>
+  <Accordion title="Which client ID am I using?">
+    PymtHouse has **two client IDs** per app. Using the wrong one causes the most common integration errors.
+
+    | Prefix | Type | Used in |
+    |--------|------|---------|
+    | `app_…` | Public client | URL path `{clientId}`, device flow `client_id`, JWT `azp` / `client_id` claim |
+    | `m2m_…` | Confidential M2M | HTTP Basic auth `username`, `client_id` in token requests |
+
+    **Golden rule:** The path `{clientId}` and the JWT `client_id` / `azp` claim always use the **public** `app_…` id. HTTP Basic credentials always use the **M2M** `m2m_…` id.
+  </Accordion>
+
+  <Accordion title="Are my env vars set correctly?">
+    The four required variables — and the clients they correspond to:
+
+    ```bash
+    echo $PYMTHOUSE_ISSUER_URL         # must end in /api/v1/oidc
+    echo $PYMTHOUSE_PUBLIC_CLIENT_ID   # must start with app_
+    echo $PYMTHOUSE_M2M_CLIENT_ID      # must start with m2m_
+    echo $PYMTHOUSE_M2M_CLIENT_SECRET  # must start with pmth_cs_
+    ```
+
+    If `PYMTHOUSE_PUBLIC_CLIENT_ID` starts with `m2m_` (or vice versa), every flow will fail.
+  </Accordion>
+
+  <Accordion title="Is the user provisioned before minting a JWT?">
+    You must call `POST .../users` before calling `POST .../users/{id}/token`. If the user does not exist in PymtHouse, the token mint returns `404`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Error reference
+
+### `400 invalid_scope`
+
+**Where it appears:** Token endpoint (`POST /api/v1/oidc/token`) or user-token mint (`POST .../users/{id}/token`)
+
+**Cause A — Public client missing the requested scope**
+
+The scope you're requesting (e.g. `sign:job`) must be in the **public client's** `allowed_scopes`. The user-token mint validates the requested scope against the public client, not the M2M client.
+
+Fix: Add the missing scope to the **public** `app_…` client's `allowed_scopes` in the dashboard.
+
+**Cause B — M2M client missing `users:token`**
+
+Minting user JWTs requires the M2M client to have `users:token` in its `allowed_scopes`.
+
+Fix: Add `users:token` to the **M2M** `m2m_…` client.
+
+**Cause C — Requesting `admin` scope**
+
+`admin` scope is explicitly rejected on the user-token mint endpoint.
+
+Fix: Remove `admin` from the requested scope.
+
+**Diagnostic:**
+
+```bash
+# Check what scopes the M2M client has by inspecting the token response
+TOKEN_RESPONSE=$(curl -sS \
+  -d "grant_type=client_credentials" \
+  -d "client_id=${M2M_ID}" \
+  -d "client_secret=${M2M_SECRET}" \
+  -d "scope=users:token" \
+  "${BASE_URL}/api/v1/oidc/token")
+
+echo "$TOKEN_RESPONSE" | jq .  # look for "error": "invalid_scope" vs access_token
+```
+
+---
+
+### `400 programmatic / per_user`
+
+**Where it appears:** User-token mint or programmatic token flow
+
+**Cause:** The public client's `allowed_scopes` must include `users:token` to enable programmatic (non-interactive) user token issuance.
+
+Fix: Add `users:token` to the **public** `app_…` client's `allowed_scopes`. Note: this also switches the app's billing mode to **per-user**, so per-user usage attribution becomes available in the Usage API.
+
+---
+
+### `400 invalid_grant` on device poll
+
+**Where it appears:** Token polling after device flow (`POST /api/v1/oidc/token` with `grant_type=device_code`)
+
+**Message:** `grant request is invalid` after the browser completed login
+
+**Cause:** The device grant's `accountId` could not be resolved. This happens when the `subject_token` used in the RFC 8693 device binding step has a `sub` that maps to an `app_users` row, but that row hasn't been linked to an `end_users` / `users` record via `findOrCreateAppEndUser`.
+
+Fix: Ensure the `subject_token` in the device-completion call is minted via `POST .../users/{externalUserId}/token` (Builder API), **not** a raw `client_credentials` token. The Builder API mint creates the `end_users` linkage.
+
+---
+
+### `404 Not Found` on valid credentials
+
+**Where it appears:** Any Builder API or Usage API endpoint
+
+**Cause A — M2M client from a different app**
+
+The M2M client's app does not match the `{clientId}` in the URL path. PymtHouse returns `404` (not `403`) for security — it does not reveal whether the path `clientId` exists.
+
+Fix: Confirm `M2M_ID` and `PUBLIC_CLIENT_ID` belong to the same registered developer app.
+
+**Cause B — Wrong client ID type in the URL**
+
+Using `m2m_…` as the URL `{clientId}` instead of `app_…`.
+
+Fix: All `/api/v1/apps/{clientId}/…` paths use the **public** `app_…` client id in the URL.
+
+**Cause C — User not yet provisioned**
+
+Calling `/users/{externalUserId}/token` before `/users` to provision the user.
+
+Fix: Call `POST /users` with the `externalUserId` before minting tokens for that user.
+
+---
+
+### `402 owner_payment_method_required`
+
+**Where it appears:** User provisioning (`POST /users`) or allowance grant
+
+**Cause:** The app owner's wallet is empty and no payment method is attached. When `ACTIVATION_GATE_MODE=enforce`, new user provisioning is blocked until the owner adds a payment method.
+
+Fix: Go to your billing settings and attach a payment method, or call:
+
+```bash
+# Upgrade the owner account to paid
+POST /api/v1/me/billing/upgrade-paid
+```
+
+---
+
+### `403 end_user_cap_reached`
+
+**Where it appears:** User provisioning (`POST /users`) or allowance grant
+
+**Cause:** The app has reached its configured `endUserCap` limit on total provisioned users.
+
+Fix: Increase the `endUserCap` on the app's billing settings, or contact the platform admin.
+
+---
+
+### `403 stripe_connect_required`
+
+**Where it appears:** Paid plan checkout, plan change to a priced target
+
+**Cause:** The app is in `enforce_revenue` or `enforce` activation gate mode, and Stripe Connect is not fully set up (either `charges_enabled` or `details_submitted` is false).
+
+Fix: Complete the Stripe Connect onboarding. Check the current Connect status:
+
+```bash
+curl -sS -b "${SESSION_COOKIE}" \
+  "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/billing/stripe" \
+  | jq '{ connectReady: .connectReady, chargesEnabled: .chargesEnabled }'
+```
+
+---
+
+### `503 Service Unavailable` on usage/balance
+
+**Where it appears:** `GET .../usage`, `GET .../usage/balance`, `GET .../users/{id}/allowances`
+
+**Cause:** `OPENMETER_URL` is not configured, or the OpenMeter service is unreachable. All usage and allowance reads require OpenMeter.
+
+Fix: Verify `OPENMETER_URL` and `OPENMETER_API_KEY` are set in your deployment environment. Check connectivity from the PymtHouse service to the OpenMeter host.
+
+---
+
+### Usage shows zero after AI requests
+
+**Cause A — Async metering delay**
+
+Usage is metered asynchronously via Kafka → OpenMeter collector. There is typically a 10–30 second delay between a signed ticket and it appearing in the Usage API.
+
+Fix: Wait 30 seconds and query again.
+
+**Cause B — `OPENMETER_URL` not configured**
+
+If `openMeterConfigured: false` appears in the usage response, metering is not active.
+
+Fix: Configure `OPENMETER_URL` and bootstrap OpenMeter meters with `npm run openmeter:bootstrap`.
+
+**Cause C — `pipeline` + `modelId` missing from the request**
+
+`groupBy=pipeline_model` aggregates from validated billing events. Events that arrive without `pipeline` + `modelId` metadata appear only in `totals`, not in `byPipelineModel`.
+
+Fix: Ensure the gateway includes `paymentMetadataVersion` with `pipeline` and `modelId` in the payment payload. See the gateway payment metadata contract in the Builder API reference.
+
+---
+
+### `trial_credits_exhausted` from the signer
+
+**Cause:** The user's `hasAccess` is `false` — their allowance balance is zero.
+
+Fix: Check the balance, then either grant a top-up or direct the user to a plan upgrade:
+
+```bash
+# Check balance
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/usage/balance?externalUserId=user-123" \
+  | jq .hasAccess
+
+# Grant a manual top-up ($5)
+curl -sS -X POST -u "${M2M_ID}:${M2M_SECRET}" \
+  -H "Content-Type: application/json" \
+  -d '{"amountUsdMicros":"5000000","source":"manual"}' \
+  "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/users/user-123/allowances"
+```
+
+---
+
+### JWT session decrypt errors (NextAuth)
+
+**Symptom:** Repeated `JWT_SESSION_ERROR` or `JWEDecryptionFailed` in server logs
+
+**Cause:** `NEXTAUTH_SECRET` changed or `.env.local` is overriding `.env`.
+
+Fix:
+1. Ensure `NEXTAUTH_SECRET` is stable across deployments.
+2. Check that `.env.local` does not contain a conflicting `NEXTAUTH_SECRET`.
+3. Clear browser cookies for the app origin and sign in again.
+
+---
+
+## Auth model reference
+
+| Auth mode | Where to use | Credential |
+|-----------|-------------|------------|
+| HTTP Basic | Builder API, Usage API, Allowances, Balance | `base64(m2m_id:m2m_secret)` |
+| Bearer (machine token) | Builder API, Usage API | Short-lived JWT from client credentials grant |
+| Bearer (user JWT) | End-user usage routes, AI service requests | Short-lived JWT from user-token mint |
+| Bearer (signer session) | Remote signer DMZ | Opaque `pmth_*` from RFC 8693 exchange |
+| Provider session cookie | Plans, Billing settings, Stripe Connect | NextAuth session cookie |
+
+HTTP Basic is **required** (not optional) for the canonical Usage API paths (`/api/v1/builder/apps/…/usage*`). Bearer machine tokens are not accepted there.
+
+---
+
+## Getting help
+
+If you've worked through this guide and are still stuck:
+
+1. Check the server logs — PymtHouse logs the specific validation that failed.
+2. Verify your credentials against the OIDC discovery document: `GET {issuer}/.well-known/openid-configuration`
+3. Use the interactive API docs at `GET /api/v1/docs` to test endpoints directly.

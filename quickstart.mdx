@@ -1,53 +1,63 @@
 ---
 title: Quickstart
-description: Provision a user and mint a scoped access token in under ten minutes.
+description: Provision a user, mint a signed JWT, and verify usage tracking — all with working curl commands.
 ---
 
-This guide walks through the minimum steps to integrate a backend service with PymtHouse. By the end you will have:
+By the end of this guide your backend will be able to:
 
-1. A machine token issued via client credentials (RFC 6749 §4.4).
-2. An end-user provisioned in your app's tenant.
-3. A user-scoped JWT with `sign:job` ready to pass to PymtHouse services.
+1. Authenticate as a machine client (server-to-server)
+2. Provision an end-user in your app's tenant
+3. Issue a signed, scoped JWT for that user
+4. Gate a request on the user's entitlement balance
+5. Query usage to confirm metering is working
+
+**Time:** ~10 minutes  
+**What you need:** `curl`, `jq`, and credentials from your PymtHouse app registration
 
 ## Prerequisites
 
-- A registered developer app with a **confidential M2M client** (`m2m_…` id and `pmth_cs_…` secret). See [Client model](/integration/client-model) for how these relate.
-- `curl` and `jq` available locally, or any HTTP client.
-- Your PymtHouse deployment URL (local: `http://localhost:3001`).
+You need three values from your registered developer app. If you don't have these yet, ask your platform admin or check your app's settings page.
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
-export M2M_ID="m2m_yourClientId"
-export M2M_SECRET="pmth_cs_yourSecret"
-export PUBLIC_CLIENT_ID="app_yourClientId"
+export BASE_URL="https://your-pymthouse.example"  # or http://localhost:3001 for local dev
+export PUBLIC_CLIENT_ID="app_yourClientId"         # public client — appears in JWT claims
+export M2M_ID="m2m_yourClientId"                   # M2M client — server-side only
+export M2M_SECRET="pmth_cs_yourSecret"             # M2M secret — server-side only
 ```
 
 <Tip>
-  For local development, `BASE_URL` is `http://localhost:3001`. The M2M and public client IDs are created from the developer dashboard or by running `npm run oidc:seed` during setup.
+  For local development, `BASE_URL` is `http://localhost:3001`. Your M2M and public client IDs are created automatically during app setup.
 </Tip>
 
-## Step 1 — Obtain a machine token
+---
 
-Exchange your M2M client credentials for a short-lived access token. The token endpoint follows OIDC discovery and is stable at `{issuer}/token`.
+## Step 1 — Authenticate your backend
+
+Exchange your M2M credentials for a short-lived machine token. This token authorizes Builder API calls on behalf of your app.
 
 ```bash
 MACHINE_TOKEN=$(curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials" \
   -d "client_id=${M2M_ID}" \
   -d "client_secret=${M2M_SECRET}" \
   -d "scope=users:write users:token" \
   "${BASE_URL}/api/v1/oidc/token" | jq -r '.access_token')
 
-echo "Machine token: ${MACHINE_TOKEN:0:40}..."
+echo "Token acquired: ${MACHINE_TOKEN:0:50}..."
 ```
 
+You'll use this token for the next two steps. Machine tokens are short-lived — acquire a fresh one per request batch rather than persisting them.
+
 <Note>
-  Request only the scopes your operation requires. `users:write` is needed for provisioning; `users:token` is needed for minting user JWTs. Scope assignment is managed on the M2M client; ask the platform admin if a scope is missing.
+  `scope=users:write users:token` is the minimum needed for this guide. `users:write` lets you provision users; `users:token` lets you mint JWTs for them.
 </Note>
 
-## Step 2 — Provision an end-user
+---
 
-Create or upsert a user record linked to your own user identifier (`externalUserId`). This call is **idempotent**: sending the same `externalUserId` again returns the existing record rather than creating a duplicate.
+## Step 2 — Provision a user
+
+Register a user in your app's tenant. Use your own identifier — PymtHouse calls this `externalUserId`. This call is **idempotent**: running it again updates the existing record instead of creating a duplicate.
 
 ```bash
 curl -sS \
@@ -61,11 +71,13 @@ curl -sS \
   "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/users" | jq .
 ```
 
-A `200` response confirms the user exists in the PymtHouse tenant. Store nothing from this response — `externalUserId` is your stable join key.
+A `200` response confirms the user exists. PymtHouse automatically subscribes new users to the app's **Starter plan** — they start with a default $5.00 USD allowance for AI job requests.
 
-## Step 3 — Mint a user-scoped JWT
+---
 
-Issue a short-lived access token on behalf of the user. This token carries the user's identity as its `sub` and is scoped to the requested capability.
+## Step 3 — Issue a signed user JWT
+
+Mint a short-lived access token scoped to this user. This is what you'll pass to AI services as proof that this user is authorized to make a request.
 
 ```bash
 USER_JWT=$(curl -sS \
@@ -75,29 +87,115 @@ USER_JWT=$(curl -sS \
   "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/users/user-123/token" \
   | jq -r '.access_token')
 
-echo "User JWT: ${USER_JWT:0:40}..."
+echo "User JWT: ${USER_JWT:0:60}..."
 ```
 
-This token:
-- Has `sub` = the PymtHouse app-user record id.
-- Has `client_id` / `azp` = the **public** `app_…` client id.
-- Is bounded to the scopes configured on the public client — `sign:job` must be in its `allowed_scopes`.
+This JWT has:
+- `sub` — the PymtHouse user record id
+- `azp` / `client_id` — your public `app_…` client id  
+- `scope` — `sign:job` (gates this user to AI signing requests)
 
-Pass this token in an `Authorization: Bearer` header to downstream PymtHouse services.
+Pass it as `Authorization: Bearer ${USER_JWT}` to any PymtHouse-integrated service.
+
+---
+
+## Step 4 — Check the user's entitlement balance
+
+Before dispatching an AI request, verify the user has remaining balance. This is the access gate.
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/usage/balance?externalUserId=user-123" | jq .
+```
+
+Response:
+
+```json
+{
+  "hasAccess": true,
+  "balanceUsdMicros": "5000000",
+  "remainingUsdMicros": "5000000",
+  "consumedUsdMicros": "0",
+  "lifetimeGrantedUsdMicros": "5000000"
+}
+```
+
+`hasAccess: true` means the user can proceed. Gate your request on this field. When the balance is exhausted, `hasAccess` becomes `false` and the signer will reject requests with `trial_credits_exhausted`.
+
+---
+
+## Step 5 — Query usage
+
+After your first AI request goes through, verify it was metered:
+
+```bash
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${PUBLIC_CLIENT_ID}/usage?groupBy=user" | jq .
+```
+
+Usage appears here after the OpenMeter collector ingests the signed-ticket event from the AI backend. There is a short async delay (typically under 30 seconds in production).
+
+---
 
 ## What's next
 
+You have the core flow working. Now wire it into your product:
+
 <CardGroup cols={2}>
-  <Card title="Client model" icon="diagram-project" href="/integration/client-model">
-    Deep-dive into the two-client pattern, scope table, and billing mode.
+  <Card title="Integration patterns" icon="diagram-project" href="/integration/integration-patterns">
+    Full working examples: SaaS app, CLI device flow, and metered billing. Pick the one that matches your architecture.
   </Card>
-  <Card title="Machine access" icon="server" href="/integration/machine-access">
-    Alternative auth patterns and how to keep machine tokens short-lived.
+  <Card title="Builder SDK" icon="code" href="/integration/sdk">
+    Replace the curl calls with one TypeScript client. `mintSignerSessionForExternalUser` handles upsert + mint + exchange in one call.
   </Card>
-  <Card title="Device flow" icon="mobile-screen" href="/integration/device-flow">
-    Add browser-authenticated device sessions for CLI and limited-input clients.
+  <Card title="Device flow" icon="terminal" href="/integration/device-flow">
+    Add browser-based login for users authenticating from a CLI or terminal.
   </Card>
-  <Card title="Usage API" icon="chart-bar" href="/integration/usage-api">
-    Query fee totals and per-user attribution for billing dashboards.
+  <Card title="Billing setup" icon="credit-card" href="/integration/billing">
+    Connect Stripe, configure plans, and let users pay for usage beyond the Starter allowance.
   </Card>
 </CardGroup>
+
+### SDK equivalent
+
+The entire quickstart in TypeScript using the Builder SDK. See [Builder SDK](/integration/sdk) for install instructions and the full method reference.
+
+```ts
+import { PmtHouseClient, PmtHouseError } from "@pymthouse/builder-sdk";
+
+const client = new PmtHouseClient({
+  issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+  m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+  m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+  // Set to true for local dev when issuer URL is http://
+  allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
+});
+
+// Steps 2–3: mint user JWT (auto-provisions on first call via 404-retry)
+async function mintUserToken(externalUserId: string): Promise<string> {
+  try {
+    const { access_token } = await client.mintUserAccessToken({ externalUserId });
+    return access_token;
+  } catch (err) {
+    if (err instanceof PmtHouseError && err.status === 404 && err.code === "not_found") {
+      await client.upsertAppUser({ externalUserId });
+      const { access_token } = await client.mintUserAccessToken({ externalUserId });
+      return access_token;
+    }
+    throw err;
+  }
+}
+
+// Step 4: check balance before dispatching
+const balance = await client.getUsageBalance("user-123");
+if (!balance.hasAccess) {
+  throw new Error("Insufficient balance — top up or upgrade plan");
+}
+
+// Step 3: mint the token
+const userJwt = await mintUserToken("user-123");
+console.log("User JWT:", userJwt.slice(0, 40) + "...");
+```

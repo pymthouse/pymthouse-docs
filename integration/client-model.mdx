@@ -1,118 +1,147 @@
 ---
 title: Client model
-description: Public and M2M clients, API keys, OAuth scopes, and billing patterns. Read this before writing any integration code.
+description: The two-client pattern, OAuth scopes, API keys, and billing modes. Read this before writing any integration code.
 ---
 
-PymtHouse uses a **two-client model** for every interactive developer app. Understanding the split between a public client and a confidential M2M client — the scope table that governs both — and the role of opaque API keys is a prerequisite for correctly implementing any integration pattern.
+## TL;DR
 
-## The two-client model
+Every app has **two OIDC clients**. You use different ones in different places:
 
-Each developer app that needs both end-user and server-to-server access has two OIDC clients registered in PymtHouse:
+| Client | `client_id` prefix | Has secret? | Where you use it |
+|--------|-------------------|-------------|-----------------|
+| **Public** | `app_…` | No | URL path `{clientId}`, device flow, JWT `client_id` claim |
+| **M2M (backend)** | `m2m_…` | Yes (`pmth_cs_…`) | HTTP Basic auth, Builder API calls, token requests |
 
-| Role | `client_id` prefix | Has secret? | Purpose |
-| --- | --- | --- | --- |
-| **Public** | `app_…` | No (`token_endpoint_auth_method: none`) | Device and browser flows; appears in user-facing URLs and verification links; `client_id` value in minted user JWTs |
-| **Confidential (M2M)** | `m2m_…` | Yes (`pmth_cs_…`) | Builder API calls (user provisioning, user JWT minting); RFC 8693 device completion token exchange |
+The single most common integration mistake: putting `m2m_…` where `app_…` belongs (or vice versa). Keep the env variable names unambiguous:
 
-The two clients are siblings: `developer_apps.oidc_client_id` → public row; `developer_apps.m2m_oidc_client_id` → M2M row.
+```bash
+PYMTHOUSE_PUBLIC_CLIENT_ID="app_…"      # safe to embed in CLIs and browser code
+PYMTHOUSE_M2M_CLIENT_ID="m2m_…"        # server-side only, never expose
+PYMTHOUSE_M2M_CLIENT_SECRET="pmth_cs_…" # server-side only, rotate regularly
+```
 
-<Warning>
-  Never add a secret to the public client. Doing so would break device login because the token endpoint would then require the secret for every device poll request initiated by a CLI or SDK.
-</Warning>
+---
 
-### Why two clients instead of one?
+## Why two clients?
 
-OAuth 2.0 draws a hard line between public clients (those that cannot keep a secret, such as native apps and CLIs) and confidential clients (servers that can). A single client cannot satisfy both security requirements:
+OAuth 2.0 distinguishes **public** clients (those that cannot keep secrets — CLIs, native apps, browsers) from **confidential** clients (servers that can). A single client cannot satisfy both:
 
-- **Device flow polling** happens in a CLI or SDK — no place to store a secret.
-- **Builder API calls** must be authenticated to enforce the tenant boundary — a secret is required.
+- **Device flow polling** happens on the user's device — no place to safely store a secret.
+- **Builder API calls** must prove your backend's identity — a secret is required.
 
-Separating them also means that rotating the M2M secret never affects active device sessions, and that a compromised public `client_id` does not expose any server-side credential.
+Keeping them separate also means rotating the M2M secret never disrupts active device sessions.
 
-## API keys (`pmth_*`)
+---
 
-In addition to short-lived JWTs, PymtHouse issues **long-lived opaque API keys** prefixed `pmth_*`. These are used for:
+## The public client (`app_…`)
 
-- **M2M client secrets** — The `pmth_cs_…` secret on the confidential client, used for HTTP Basic auth on Builder API calls.
-- **Per-user API keys** — `pmth_ak_…` keys created via `POST .../users/{externalUserId}/keys`, exchangeable for short-lived JWTs or signer sessions.
-- **App-level API keys** — `pmth_ak_…` keys tied to a subscription, created via `POST .../keys`.
+Use the public client wherever the user or device needs to see a `client_id`:
 
-API keys are long-lived and must be stored securely server-side. Exchange them for short-lived JWTs on demand rather than using them directly on the signing hot path. See [API keys](/integration/api-keys) for the exchange flows.
+- The `client_id` parameter in device authorization requests
+- Verification URLs shown to users (`verification_uri_complete`)
+- The `client_id` / `azp` claim in issued user JWTs
+- The `{clientId}` URL path segment in all Builder API calls
 
-## Environment variables
+**Never add a secret to the public client.** Device flow polling requires that the public client has no secret — adding one would break every CLI and SDK that polls the device code endpoint.
 
-Follow this naming convention when configuring your integration. Mistakes here are a common source of `400 invalid_scope` and `401` errors.
+---
 
-| Variable | Value | Notes |
-| --- | --- | --- |
-| `PYMTHOUSE_ISSUER_URL` | `https://your-pymthouse.example/api/v1/oidc` | Must match `iss` in issued tokens. Use discovery to resolve endpoint paths. |
-| `PYMTHOUSE_PUBLIC_CLIENT_ID` | `app_…` | Public client id. Use everywhere the user or device sees a `client_id`. |
-| `PYMTHOUSE_M2M_CLIENT_ID` | `m2m_…` | Confidential client id. Server-side only. Never expose to the browser or CLI. |
-| `PYMTHOUSE_M2M_CLIENT_SECRET` | `pmth_cs_…` | Confidential secret. Server-side only. Rotate via the credentials endpoint. |
+## The M2M client (`m2m_…`)
 
-<Note>
-  The `@pymthouse/builder-sdk/env` subpath reads these exact variable names. See [Builder SDK](/integration/sdk).
-</Note>
+Use the M2M client exclusively in your server-side backend:
+
+- HTTP Basic auth: `Authorization: Basic base64(m2m_id:m2m_secret)`
+- Client credentials grant to get a machine token
+- RFC 8693 token exchange (device completion, signer session)
+
+Never expose the M2M client id or secret in browser JavaScript, CLI binaries, or mobile apps.
+
+---
 
 ## OAuth scopes
 
-Scopes control what each client can request and what claims appear in issued tokens.
-
 ### Public client scopes (`allowed_scopes`)
 
-These scopes are configured on the public `app_…` client. They govern:
+Configured on the `app_…` client. They control two things:
 
-1. **End-user token claims** — which claims appear in tokens issued to the user.
-2. **Programmatic user JWT requests** — scopes requested when calling the user-token mint endpoint are validated against this list, not the M2M list.
-3. **Billing pattern** — see below.
+1. **What claims appear in user JWTs** — requested scopes are validated against this list
+2. **Billing mode** — presence of `users:token` switches the app to per-user billing
 
 | Scope | Effect |
-| --- | --- |
-| `sign:job` | Grants access to sign a job. Default scope for user-token mint if none is specified. Also causes `sign:mint_user_token` to be auto-added to the paired M2M client. |
-| `users:token` | Marks the app as **per-user billing mode** (see below). Also required on the M2M client for minting operations. |
+|-------|--------|
+| `sign:job` | Authorizes AI job signing. Default scope for user-token mint. Auto-adds `sign:mint_user_token` to the M2M client. |
+| `users:token` | Enables per-user billing attribution. Required if you want per-user usage data. Also required on M2M for token minting. |
 
 ### M2M client scopes (`allowed_scopes`)
 
-These scopes gate server-side calls from the confidential `m2m_…` client.
+Gate what your backend can do:
 
-| Scope | Endpoint / operation |
-| --- | --- |
-| `users:read` | `GET /api/v1/apps/{clientId}/users` |
-| `users:write` | `POST`, `PUT`, `DELETE` on `/api/v1/apps/{clientId}/users` |
-| `users:token` | `POST .../users/{externalUserId}/token`; RFC 8693 device completion and signer session exchange |
-| `device:approve` | Alternative to `users:token` for RFC 8693 device completion only |
-| `sign:mint_user_token` | Auto-added when public client has `sign:job`. Enables Option A clearinghouse signer mint via `client_credentials` + `external_user_id` parameter. |
+| Scope | What it unlocks |
+|-------|----------------|
+| `users:read` | List provisioned users |
+| `users:write` | Create, update, deactivate users |
+| `users:token` | Mint user JWTs; RFC 8693 device completion and signer session exchange |
+| `device:approve` | Device completion only (alternative to `users:token`) |
+| `sign:mint_user_token` | Option A: mint user signer JWT in one call (auto-added when public client has `sign:job`) |
 
-Grant only the minimum scopes the server-side flow requires.
+Request only the scopes your backend needs. Excess scopes increase risk without benefit.
 
-## Billing pattern
+---
 
-The presence of `users:token` in the **public** client's `allowed_scopes` determines the billing mode for the app:
+## Billing mode
 
-| Public client has `users:token`? | Mode |
-| --- | --- |
-| Yes | **Per-user** — usage is attributed to individual `endUserId` records. |
-| No | **App-level** — usage rolls up to the app without user attribution. |
+The `users:token` scope on the **public** client determines how usage is attributed:
 
-This is derived from `src/lib/allowed-scopes.ts → billingPatternFromAllowedScopesString`. Add `users:token` to the public client only if your use case requires per-user billing data from the [Usage API](/integration/usage-api).
+| Public client has `users:token`? | Billing mode |
+|----------------------------------|-------------|
+| Yes | **Per-user** — usage attributed to individual end-users. `groupBy=user` on Usage API returns per-user data. |
+| No | **App-level** — usage rolls up to the app. No per-user breakdown. |
 
-## Client registration
+Add `users:token` only if your use case requires per-user billing data. It cannot be removed without changing billing attribution behavior.
 
-Clients are created and managed through the developer dashboard or API. `npm run oidc:seed` initialises **signing keys only** — it does not create application clients. Ask the platform administrator if you need a client pair provisioned in a shared environment.
+---
 
-## Key design decisions
+## API keys (`pmth_*`)
 
-1. **`client_id` as the URL tenant identifier.** All Builder API paths use `/api/v1/apps/{clientId}/…` where `clientId` is the public `app_…` value. This avoids exposing internal database IDs and keeps the URL stable across secret rotations.
-2. **Secrets on M2M only.** Placing the secret exclusively on the M2M client allows the public client to be freely embedded in CLI binaries, native apps, and JavaScript SDKs without creating a secret-exposure risk.
-3. **Scope policy on the public client governs JWT claims.** Validating the requested scope for user-JWT minting against the public client means users cannot receive capabilities that exceed what the app registered for.
-4. **Billing pattern inferred from scope.** Using the presence of `users:token` in `allowed_scopes` rather than a separate flag means the billing mode is a direct consequence of the integration pattern rather than an independent setting.
-5. **`sign:mint_user_token` auto-derived.** Auto-adding this scope to M2M clients when the public client has `sign:job` prevents a configuration footgun where the public scope and M2M clearinghouse capability drift out of sync.
+Long-lived opaque keys issued by PymtHouse:
 
-## Implementation tasks
+| Format | Role |
+|--------|------|
+| `pmth_cs_…` | M2M client secret — used in HTTP Basic auth |
+| `pmth_ak_…` | Per-user API key — exchangeable for a short-lived JWT or signer session |
 
-- Register your app and both clients (public + M2M) before testing any endpoint.
-- Store `PYMTHOUSE_M2M_CLIENT_ID` and `PYMTHOUSE_M2M_CLIENT_SECRET` in your backend secret manager; never expose them to the browser, mobile app, or CLI.
-- Confirm that `PYMTHOUSE_PUBLIC_CLIENT_ID` is the `app_…` public id wherever it appears in device or browser flows.
-- Add only the scopes listed in the table above to each client; remove any default placeholder scopes added by tooling.
-- Rotate M2M secrets through the credentials endpoint; update the secret in your secret manager without touching the public client.
-- For per-user API key flows, use `POST .../users/{externalUserId}/keys` — see [API keys](/integration/api-keys).
+Per-user API keys are created via `POST .../users/{externalUserId}/keys` and must be stored securely server-side. Exchange them for short-lived JWTs on demand rather than using them directly in the signing hot path.
+
+---
+
+## Three-sibling pattern (advanced)
+
+Apps that also need browser-based SSO (e.g., a Kong Dev Portal login) register a third client:
+
+| Role | `client_id` prefix | Has secret? | Used for |
+|------|--------------------|-------------|---------|
+| Public | `app_…` | No | Device/SDK flows |
+| M2M | `m2m_…` | Yes | Builder API, token exchange |
+| Web RP | `web_…` | Yes | Authorization code + browser redirect (portal SSO) |
+
+The `web_…` client registers redirect URIs and supports `authorization_code`. It is **not** for Builder API or device flows. See [Interactive login](/integration/interactive-login).
+
+---
+
+## Checklist before writing code
+
+- [ ] Confirm `PYMTHOUSE_PUBLIC_CLIENT_ID` starts with `app_`
+- [ ] Confirm `PYMTHOUSE_M2M_CLIENT_ID` starts with `m2m_`
+- [ ] Both credentials belong to the same registered developer app
+- [ ] M2M secret is stored in your backend secret manager, not in source code
+- [ ] Public client has `sign:job` in `allowed_scopes`
+- [ ] M2M client has `users:write` and `users:token` in `allowed_scopes`
+- [ ] If per-user billing: public client also has `users:token`
+
+## Rotate M2M secrets
+
+Rotate via `POST /api/v1/apps/{clientId}/credentials` (provider session) or the credentials page in the dashboard. After rotation:
+
+1. Update the secret in your backend secret manager.
+2. Redeploy or restart your service.
+3. **Do not** touch the public client — it has no secret to rotate.
