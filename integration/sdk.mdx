@@ -132,11 +132,9 @@ All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicCl
 | `@pymthouse/builder-sdk/format` | Edge-safe | `formatWeiToEth`, `formatWeiToUsd` — wei display formatting |
 | `@pymthouse/builder-sdk/plan-pricing` | Edge-safe | `markupPercentToRetailRateUsd`, `applyRetailRateToNetworkMicros`, plan pricing math |
 | `@pymthouse/builder-sdk/signer/server` | **Node only** | `createDirectSignerProxyHandler`, `forwardDirectSignerRequest`, `createSignerTokenManager` |
-| `@pymthouse/builder-sdk/signer/webhook` | Node + Edge | `createRemoteSignerAuthorizeHandler`, identity webhook handler + adapters |
-| `@pymthouse/builder-sdk/signer/webhook/adapters/oidc` | Node + Edge | OIDC JWT end-user verifier |
-| `@pymthouse/builder-sdk/signer/webhook/adapters/api-key` | Node + Edge | API key end-user verifier |
-| `@pymthouse/builder-sdk/signer/webhook/adapters/trusted-headers` | Edge-safe | Trusted header end-user verifier |
-| `@pymthouse/builder-sdk/signer/webhook/adapters/composite` | Node + Edge | First-match composite verifier |
+| `@livepeer/clearinghouse-identity-webhook/protocol` | Node | `handleAuthorize`, go-livepeer webhook wire protocol |
+| `@livepeer/clearinghouse-identity-webhook/legacy-env` | Node | `createLegacyWebhookConfigFromEnv` — maps `JWT_*` / `CLAIM_*` to OIDC verifier |
+| `@livepeer/clearinghouse-identity-webhook/verifiers` | Node | `createOidcVerifier`, `createApiKeyVerifier`, `createEndUserVerifierFromEnv` |
 
 ## Common usage patterns
 

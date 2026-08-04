@@ -1,91 +1,103 @@
 ---
-title: Developer API Overview
-description: Build on the PymtHouse OIDC issuer and Builder API. Start with the quickstart or jump directly to the guide you need.
+title: PymtHouse Docs
+description: Add AI job signing, metered per-user billing, and OAuth authentication to your app in minutes.
 ---
 
-PymtHouse is the **OpenID Connect issuer and builder platform** for integrator applications. Your backend authenticates as a confidential OAuth client, provisions end-users via the Builder API, and uses signed JWTs to gate access to the remote signer DMZ on their behalf.
+PymtHouse is the **identity and billing layer for AI applications**. You bring your users; PymtHouse handles authentication, usage metering, and payment collection so you can focus on your product.
 
-All integrations share the same identity model: every registered app gets a **public client** (`app_…`) for device and browser flows and a **confidential M2M client** (`m2m_…`) for server-to-server calls. Read [Client model](/integration/client-model) first if this is new to you.
+## What you can build
+
+<CardGroup cols={3}>
+  <Card title="Metered AI API" icon="bolt">
+    Gate AI job requests by user balance. Charge per inference. Automatically track usage across pipeline and model.
+  </Card>
+  <Card title="CLI with device login" icon="terminal">
+    Let users authenticate your CLI with their browser. No password prompts, no API key management.
+  </Card>
+  <Card title="Multi-tenant SaaS" icon="users">
+    Provision users on sign-up, issue scoped JWTs per request, and show per-user billing dashboards.
+  </Card>
+</CardGroup>
+
+## How it works
+
+Your backend registers as an OAuth client. PymtHouse becomes the **OIDC issuer** for your app — it authenticates your users, issues signed JWTs, and meters usage through OpenMeter. You never touch user credentials or billing infrastructure directly.
+
+```
+Your backend → PymtHouse → issues JWT → user makes AI request → usage metered → OpenMeter → billing
+```
+
+Three things you configure once and reuse everywhere:
+
+| What | Env variable | Used for |
+|------|-------------|----------|
+| Public client id | `PYMTHOUSE_PUBLIC_CLIENT_ID` (`app_…`) | Device login, JWT `client_id` claim |
+| M2M client id | `PYMTHOUSE_M2M_CLIENT_ID` (`m2m_…`) | Server-to-server Builder API calls |
+| M2M client secret | `PYMTHOUSE_M2M_CLIENT_SECRET` (`pmth_cs_…`) | Authenticating Builder API calls |
 
 ## Start here
 
 <CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Provision a user and mint a scoped JWT in under ten minutes.
+  <Card title="5-minute quickstart" icon="rocket" href="/quickstart">
+    Provision a user, mint a signed JWT, and verify usage tracking with working curl commands.
   </Card>
-  <Card title="Client model" icon="diagram-project" href="/integration/client-model">
-    Understand public vs M2M clients, API keys, scopes, and the billing pattern before writing any code.
-  </Card>
-  <Card title="Builder SDK" icon="code" href="/integration/sdk">
-    TypeScript client for the Builder API, OIDC issuer, and signer integration. Install in one line.
-  </Card>
-  <Card title="API keys" icon="key" href="/integration/api-keys">
-    Long-lived pmth_* keys for per-user and app-level integrations. Exchange for short-lived JWTs on demand.
+  <Card title="Integration patterns" icon="diagram-project" href="/integration/integration-patterns">
+    Pick your pattern: SaaS app, CLI device flow, or metered billing. Full working examples.
   </Card>
 </CardGroup>
 
-## Authentication
-
-Choose the authentication pattern that matches your integration:
+## Build
 
 <CardGroup cols={2}>
-  <Card title="Machine access" icon="server" href="/integration/machine-access">
-    Client credentials grant and HTTP Basic auth for server-to-server calls.
+  <Card title="Builder SDK" icon="code" href="/integration/sdk">
+    Official TypeScript SDK. Install in one line, works in Next.js, Node, and Edge.
   </Card>
-  <Card title="Interactive login" icon="arrow-right-to-bracket" href="/integration/interactive-login">
-    Authorization code flow with PKCE for browser and server-side web apps.
+  <Card title="Machine access" icon="server" href="/integration/machine-access">
+    Client credentials and HTTP Basic auth for server-to-server calls.
+  </Card>
+  <Card title="User management" icon="users" href="/integration/user-management">
+    Provision, update, and deactivate users. Per-user API keys and subscriptions.
+  </Card>
+  <Card title="User tokens" icon="id-badge" href="/integration/user-tokens">
+    Issue short-lived signed JWTs scoped to a specific user and capability.
   </Card>
   <Card title="Device flow" icon="mobile-screen" href="/integration/device-flow">
-    RFC 8628 device authorization for CLI tools, set-top boxes, and limited-input devices.
-  </Card>
-  <Card title="Token exchange" icon="arrows-rotate" href="/integration/token-exchange">
-    RFC 8693 token exchange for device completion, signer sessions, and Option A clearinghouse mint.
-  </Card>
-</CardGroup>
-
-## Builder API
-
-<CardGroup cols={2}>
-  <Card title="User management" icon="users" href="/integration/user-management">
-    Create, upsert, update, and deactivate users. Manage per-user API keys and subscriptions.
-  </Card>
-  <Card title="User-scoped JWTs" icon="id-badge" href="/integration/user-tokens">
-    Mint short-lived access tokens scoped to a specific end-user and capability.
+    Browser-based login for CLIs, terminals, and limited-input devices.
   </Card>
   <Card title="Allowances" icon="coins" href="/integration/allowances">
-    Per-user USD micro entitlement balances. Read, grant top-ups, and check real-time access.
-  </Card>
-  <Card title="Signer routing" icon="network-wired" href="/integration/signer-routing">
-    Direct DMZ proxy, identity webhook, and go-livepeer integration patterns.
+    Per-user USD balance gates. Read entitlements, grant credits, check access.
   </Card>
 </CardGroup>
 
-## Usage and billing
+## Monitor and bill
 
 <CardGroup cols={2}>
   <Card title="Usage API" icon="chart-bar" href="/integration/usage-api">
-    Aggregate request counts and fee totals. Group by user, pipeline/model, or daily windows. OpenMeter-backed.
+    Per-user and per-pipeline usage. OpenMeter-backed, queryable by date range.
   </Card>
   <Card title="Billing summary" icon="receipt" href="/integration/billing">
-    Single-call snapshot: plan, subscription, usage totals, daily timeline, overage, and USD breakdowns.
+    Cycle totals, timeline, overage, and USD breakdowns in one API call.
   </Card>
   <Card title="Plans" icon="layer-group" href="/integration/plans">
-    Create, update, sync, and manage billing plans. Includes billing API v2 and Starter plan.
+    Pricing tiers with included allowances and overage rates. Synced to OpenMeter.
+  </Card>
+  <Card title="Stripe Connect" icon="credit-card" href="/integration/billing#merchant-billing-stripe-connect">
+    Let users pay you directly. Merchant Connect setup and checkout flows.
   </Card>
 </CardGroup>
 
-## Migration
+## When things go wrong
 
-<Card title="Deprecated routes" icon="triangle-exclamation" href="/integration/deprecated">
-  Migration guide for removed endpoints: signer proxy (410), synchronous ingest (410), and deprecated credits/subscriptions.
+<Card title="Troubleshooting" icon="triangle-exclamation" href="/integration/troubleshooting">
+  `400 invalid_scope`, `404` on valid credentials, balance gate failures — common errors and how to fix them.
 </Card>
 
-## Discovery
+## Discover endpoints at runtime
 
-All endpoint paths are published via OIDC discovery. Always read endpoints from the discovery document at runtime so your integration tracks rotations automatically:
+OIDC discovery publishes all endpoint URLs for your deployment. Always resolve from discovery rather than hard-coding paths:
 
+```bash
+curl https://your-pymthouse.example/api/v1/oidc/.well-known/openid-configuration
 ```
-GET {issuer}/.well-known/openid-configuration
-```
 
-The issuer base URL for local development is `http://localhost:3001/api/v1/oidc`.
+Local development issuer: `http://localhost:3001/api/v1/oidc`

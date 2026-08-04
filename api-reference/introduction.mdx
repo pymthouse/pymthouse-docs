@@ -1,34 +1,182 @@
 ---
 title: API reference
-description: How the PymtHouse HTTP APIs and OIDC surface fit together, and where to find endpoint-level documentation.
+description: Live OpenAPI specification, endpoint inventory, and how to authenticate against the PymtHouse HTTP APIs.
 ---
 
-PymtHouse exposes a **unified OpenID Connect issuer** plus **REST-style Builder and billing APIs** under a single base URL. This tab will collect machine-readable **OpenAPI** definitions as they become available; the live **authorization, token, and user-management** paths are also listed in your tenant's [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document so your client always tracks endpoint rotations.
+PymtHouse serves a machine-readable **OpenAPI 3.0** specification and an interactive **Scalar UI** for every public endpoint.
 
-## Base URL and discovery
+## Live API docs (Scalar)
 
-- **Local development (issuer and APIs):** `http://localhost:3001/api/v1/oidc` as described on the [home page](/) — use discovery rather than hard-coding path suffixes.
-- **Discovery (runtime source of truth):** `GET {issuer}/.well-known/openid-configuration` returns all authorization, token, and JWKS endpoints for your environment.
+| Surface | Interactive docs | OpenAPI spec |
+|---------|-----------------|-------------|
+| **Builder + End-user** (M2M integrators, usage, billing) | `GET /api/v1/docs` | `GET /api/v1/openapi.json` |
+| **Internal** (dashboard session) | `GET /api/v1/internal/docs` | `GET /api/v1/internal/openapi.json` |
 
-Always resolve OAuth and OIDC URLs from discovery in production. Hard-coded paths are brittle when routes or hostnames change.
+Open `/api/v1/docs` on your PymtHouse deployment to browse and try every endpoint interactively. The Scalar UI accepts HTTP Basic auth directly in the browser.
 
-## Where to find endpoint documentation
+<Note>
+  Internal routes (`/api/v1/internal/…`) are for the PymtHouse dashboard's own session and are not linked from the public Scalar UI. Use Builder routes for all integrator access.
+</Note>
 
-All endpoint guides currently live in the **Builder guides** tab:
+---
 
-| Need | Go to |
-| --- | --- |
-| End-to-end auth flows, PKCE, device code, token exchange | [Builder guides](/quickstart) tab |
-| **Usage API** (aggregated usage, billing analytics) | [Usage API](/integration/usage-api) in Builder guides |
-| User management, app tokens, billing endpoints | [Builder guides](/integration/user-management) and related pages in that tab |
+## Base URL
 
-## Next steps
+All API endpoints share one base URL:
 
-<CardGroup cols={2}>
-  <Card title="Usage API" icon="chart-bar" href="/integration/usage-api">
-    `GET` aggregated usage and fees for your app (and optional per-user breakdown).
-  </Card>
-  <Card title="User management" icon="users" href="/integration/user-management">
-    Create and manage end-users in your app tenant via the Builder API.
-  </Card>
-</CardGroup>
+```
+https://your-pymthouse.example
+```
+
+OIDC endpoints live under `/api/v1/oidc/…`. Builder API endpoints live under `/api/v1/apps/{clientId}/…`. Usage API canonical paths live under `/api/v1/builder/apps/{clientId}/…`.
+
+Always resolve OIDC endpoint URLs from the discovery document at runtime:
+
+```bash
+curl https://your-pymthouse.example/api/v1/oidc/.well-known/openid-configuration
+```
+
+---
+
+## Authentication
+
+PymtHouse uses three auth modes depending on the operation:
+
+### HTTP Basic (M2M — most Builder/Usage routes)
+
+```http
+Authorization: Basic base64(m2m_client_id:m2m_client_secret)
+```
+
+Example:
+```bash
+curl -u "m2m_yourId:pmth_cs_yourSecret" \
+  "https://your-pymthouse.example/api/v1/apps/app_yourId/users"
+```
+
+### Bearer token (machine or user JWT)
+
+Obtain a machine token via client credentials, then use it for multiple calls:
+
+```bash
+TOKEN=$(curl -sS \
+  -d "grant_type=client_credentials" \
+  -d "client_id=m2m_yourId" \
+  -d "client_secret=pmth_cs_yourSecret" \
+  -d "scope=users:write users:token" \
+  "https://your-pymthouse.example/api/v1/oidc/token" \
+  | jq -r '.access_token')
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://your-pymthouse.example/api/v1/apps/app_yourId/users"
+```
+
+### Provider session (dashboard-only routes)
+
+Plans, Stripe Connect, and billing mutation routes require a logged-in dashboard session. These are not callable from a backend service — use the PymtHouse dashboard UI or pass the `next-auth.session-token` cookie from a browser session in scripts.
+
+---
+
+## Endpoint inventory
+
+### OIDC / Auth
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/oidc/token` | Token endpoint: client credentials, device code, token exchange |
+| `POST` | `/api/v1/oidc/device/auth` | Start device authorization (RFC 8628) |
+| `GET` | `/api/v1/oidc/.well-known/openid-configuration` | Discovery document |
+| `GET` | `/api/v1/oidc/jwks` | JSON Web Key Set for JWT verification |
+
+### User management
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/apps/{clientId}/users` | M2M | List provisioned users |
+| `POST` | `/api/v1/apps/{clientId}/users` | M2M | Create/upsert user |
+| `PUT` | `/api/v1/apps/{clientId}/users` | M2M | Update user attributes |
+| `DELETE` | `/api/v1/apps/{clientId}/users?externalUserId=…` | M2M | Deactivate user |
+| `POST` | `/api/v1/apps/{clientId}/users/{id}/token` | M2M | Mint user-scoped JWT |
+| `GET` | `/api/v1/apps/{clientId}/users/{id}/allowances` | M2M | Read user entitlement grants |
+| `POST` | `/api/v1/apps/{clientId}/users/{id}/allowances` | M2M | Grant usage credit top-up |
+| `GET` | `/api/v1/apps/{clientId}/users/{id}/subscription` | M2M | User subscription state |
+| `POST` | `/api/v1/apps/{clientId}/users/{id}/subscription/change` | M2M | Switch plan |
+
+### Usage API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/builder/apps/{clientId}/usage` | M2M Basic only | Aggregated usage (canonical) |
+| `GET` | `/api/v1/builder/apps/{clientId}/usage/balance` | M2M Basic only | User entitlement balance |
+| `GET` | `/api/v1/apps/{clientId}/usage` | M2M Basic only | Aggregated usage (legacy alias) |
+| `GET` | `/api/v1/apps/{clientId}/usage/balance` | M2M Basic only | Balance (legacy alias) |
+| `GET` | `/api/v1/user/usage` | User JWT | End-user own usage |
+| `GET` | `/api/v1/user/usage/balance` | User JWT | End-user own balance |
+| `GET` | `/api/v1/user/usage/requests` | User JWT | End-user signed-ticket history |
+
+### Billing
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/apps/{clientId}/billing` | M2M or session | Billing summary snapshot |
+| `GET` | `/api/v1/apps/{clientId}/billing/invoices` | Session | Invoice list |
+| `GET` | `/api/v1/apps/{clientId}/billing/stripe` | Session | Stripe Connect status |
+| `POST` | `/api/v1/apps/{clientId}/billing/stripe/connect` | Session | Start Stripe Connect |
+| `POST` | `/api/v1/apps/{clientId}/billing/checkout` | Session | End-user plan checkout |
+
+### Plans
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/apps/{clientId}/plans` | M2M or session | List billing plans |
+| `POST` | `/api/v1/apps/{clientId}/plans` | Session | Create plan |
+| `PUT` | `/api/v1/apps/{clientId}/plans` | Session | Update plan |
+| `DELETE` | `/api/v1/apps/{clientId}/plans?planId=…` | Session | Delete plan |
+| `POST` | `/api/v1/apps/{clientId}/plans/{id}/sync` | Session | Sync plan to OpenMeter |
+| `GET` | `/api/v1/apps/{clientId}/starter-plan` | Session | Get Starter plan |
+| `PUT` | `/api/v1/apps/{clientId}/starter-plan` | Session | Update Starter allowance |
+
+### App config
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/apps/{clientId}` | M2M or session | App metadata |
+| `GET` | `/api/v1/apps/{clientId}/manifest` | M2M or session | Network capability manifest |
+| `PUT` | `/api/v1/apps/{clientId}/manifest` | Session | Update capability exclusions |
+| `GET` | `/api/v1/apps/{clientId}/signer/routing` | M2M or session | Signer DMZ URL and webhook config |
+
+---
+
+## Common response patterns
+
+### Tenant boundary
+
+All endpoints enforce that the authenticated M2M client belongs to the same app as the `{clientId}` in the URL path. Mismatches return **`404 Not Found`** — not `401` or `403` — to prevent app id enumeration.
+
+### Wei values
+
+All `*Wei` fields are **decimal strings**, not numbers. They may exceed `Number.MAX_SAFE_INTEGER`. Parse them with `BigInt()`:
+
+```ts
+const fee = BigInt(response.totals.totalFeeWei);
+const eth = Number(fee) / 1e18;
+```
+
+### USD micros
+
+`*UsdMicros` fields are integer strings where `1000000` = `$1.00`. These are computed once at signing time and never recomputed from the current ETH/USD rate.
+
+### Error format
+
+Denial responses from the activation gate use RFC 9457 problem details:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Forbidden",
+  "status": 403,
+  "code": "stripe_connect_required"
+}
+```
+
+Machine-readable `code` values: `owner_payment_method_required`, `end_user_cap_reached`, `stripe_connect_required`, `stripe_connect_pending`.

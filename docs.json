@@ -15,14 +15,18 @@
         "groups": [
           {
             "group": "Getting started",
-            "pages": ["index", "quickstart"]
+            "pages": [
+              "index",
+              "quickstart",
+              "integration/integration-patterns"
+            ]
           },
           {
-            "group": "Concepts",
+            "group": "Core concepts",
             "pages": [
               "integration/client-model",
-              "integration/sdk",
-              "integration/api-keys"
+              "integration/api-keys",
+              "integration/sdk"
             ]
           },
           {
@@ -35,16 +39,15 @@
             ]
           },
           {
-            "group": "Builder API",
+            "group": "Users",
             "pages": [
               "integration/user-management",
               "integration/user-tokens",
-              "integration/allowances",
-              "integration/signer-routing"
+              "integration/allowances"
             ]
           },
           {
-            "group": "Billing API",
+            "group": "Billing",
             "pages": [
               "integration/billing",
               "integration/plans",
@@ -52,8 +55,16 @@
             ]
           },
           {
-            "group": "Migration",
+            "group": "Infrastructure",
             "pages": [
+              "integration/signer-routing",
+              "integration/manifest"
+            ]
+          },
+          {
+            "group": "Help",
+            "pages": [
+              "integration/troubleshooting",
               "integration/deprecated"
             ]
           }
@@ -63,7 +74,7 @@
         "tab": "API reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Overview",
             "pages": [
               "api-reference/introduction"
             ]
@@ -74,9 +85,9 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "GitHub",
+          "href": "https://github.com/eliteprox/pymthouse",
+          "icon": "github"
         }
       ]
     }

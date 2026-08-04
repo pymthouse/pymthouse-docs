@@ -48,21 +48,15 @@ const handler = createDirectSignerProxyHandler({
 });
 ```
 
-**Step 3:** Set up the go-livepeer identity webhook using `@pymthouse/builder-sdk/signer/webhook`:
+**Step 3:** Set up the go-livepeer identity webhook using `@livepeer/clearinghouse-identity-webhook`:
 
 ```ts
-import {
-  createRemoteSignerAuthorizeHandler,
-  createOidcRemoteSignerWebhookConfig,
-} from "@pymthouse/builder-sdk/signer/webhook";
+import { handleAuthorize } from "@livepeer/clearinghouse-identity-webhook/protocol";
+import { createLegacyWebhookConfigFromEnv } from "@livepeer/clearinghouse-identity-webhook/legacy-env";
 
-const authorize = createRemoteSignerAuthorizeHandler(
-  createOidcRemoteSignerWebhookConfig({
-    webhookSecret: process.env.WEBHOOK_SECRET!,
-    jwtIssuer: process.env.PYMTHOUSE_ISSUER_URL!,
-    jwtAudience: process.env.JWT_AUDIENCE!,
-  }),
-);
+export async function POST(request: Request) {
+  return handleAuthorize(request, createLegacyWebhookConfigFromEnv(process.env));
+}
 ```
 
 See [Signer routing](/integration/signer-routing) for the full setup guide.
