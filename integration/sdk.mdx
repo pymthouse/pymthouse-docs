@@ -83,10 +83,11 @@ All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicCl
 
 | Method | Description |
 | --- | --- |
-| `mintUserAccessToken(input)` | `POST .../users/{id}/token` — short-lived JWT. Requires `users:token`. |
+| `mintUserAccessToken(input)` | `POST .../users/{id}/token` — short-lived JWT. `scope` defaults to `sign:job`. Requires `users:token`. Throws `PmtHouseError({ status: 404, code: "not_found" })` if the user has not been provisioned. |
+| `ensureUserAndMintToken(input)` | Same as `mintUserAccessToken` but auto-provisions the user on `404 / not_found` via `upsertAppUser` + retry. Use this for lazy provisioning instead of calling the two methods manually. |
 | `exchangeForSignerSession({ userJwt, resource? })` | RFC 8693: user JWT → opaque `pmth_*` signer session. |
 | `mintUserSignerSessionToken(input)` | Mint user JWT + exchange in one call. |
-| `mintSignerSessionForExternalUser(input)` | Upsert user + mint + exchange workflow. |
+| `mintSignerSessionForExternalUser(input)` | Eager upsert + mint + exchange in one call. Always upserts the user first; use `ensureUserAndMintToken` when you only need a JWT without the signer exchange. |
 | `createSignerSessionToken({ userJwt? })` | Exchange or fall back to machine token. |
 | `exchangeApiKeyForUserAccessToken({ apiKey })` | `POST .../auth/api-key/token` — API key → short-lived JWT. |
 | `exchangeApiKeyForSignerSession({ apiKey, facadeUrl? })` | API key → opaque signer session. |
@@ -131,38 +132,64 @@ All REST calls use HTTP Basic auth against `{issuerOrigin}/api/v1/apps/{publicCl
 | `@pymthouse/builder-sdk/verify` | Node + Edge | `verifyJwt` — RFC 9068 JWT validation via JWKS |
 | `@pymthouse/builder-sdk/format` | Edge-safe | `formatWeiToEth`, `formatWeiToUsd` — wei display formatting |
 | `@pymthouse/builder-sdk/plan-pricing` | Edge-safe | `markupPercentToRetailRateUsd`, `applyRetailRateToNetworkMicros`, plan pricing math |
-| `@pymthouse/builder-sdk/signer/server` | **Node only** | `createDirectSignerProxyHandler`, `forwardDirectSignerRequest`, `createSignerTokenManager` |
-| `@livepeer/clearinghouse-identity-webhook/protocol` | Node | `handleAuthorize`, go-livepeer webhook wire protocol |
-| `@livepeer/clearinghouse-identity-webhook/legacy-env` | Node | `createLegacyWebhookConfigFromEnv` — maps `JWT_*` / `CLAIM_*` to OIDC verifier |
-| `@livepeer/clearinghouse-identity-webhook/verifiers` | Node | `createOidcVerifier`, `createApiKeyVerifier`, `createEndUserVerifierFromEnv` |
+| `@pymthouse/builder-sdk/signer/server` | **Node only** | `mintUserSignerToken`, `createSignerTokenManager`, `createDirectSignerProxyHandler`, `forwardDirectSignerRequest` |
+| `@pymthouse/clearinghouse-identity-webhook` | Node | Root re-export of all subpaths below |
+| `@pymthouse/clearinghouse-identity-webhook/protocol` | Node | `handleAuthorize` — go-livepeer identity webhook handler |
+| `@pymthouse/clearinghouse-identity-webhook/verifiers` | Node | `createOidcVerifier`, `createApiKeyVerifier`, `createEndUserVerifierFromEnv`, `splitCompositeApiKey` |
+| `@pymthouse/clearinghouse-identity-webhook/balance-gate` | Node | `createBalanceGate` — live balance check inside the identity webhook |
 
 ## Common usage patterns
 
-### Mint a signer session for a user
+### Construct the client
 
 ```ts
+// Explicit constructor (recommended — handles all env vars including PYMTHOUSE_ALLOW_INSECURE_HTTP)
+import { PmtHouseClient } from "@pymthouse/builder-sdk";
+
+const client = new PmtHouseClient({
+  issuerUrl: process.env.PYMTHOUSE_ISSUER_URL!,
+  publicClientId: process.env.PYMTHOUSE_PUBLIC_CLIENT_ID!,
+  m2mClientId: process.env.PYMTHOUSE_M2M_CLIENT_ID!,
+  m2mClientSecret: process.env.PYMTHOUSE_M2M_CLIENT_SECRET!,
+  allowInsecureHttp: process.env.PYMTHOUSE_ALLOW_INSECURE_HTTP === "1",
+});
+
+// Convenience factory — reads the same env vars automatically.
+// allowInsecureHttp is inferred from http: issuer URL or PYMTHOUSE_ALLOW_INSECURE_HTTP=1.
 import { createPmtHouseClientFromEnv } from "@pymthouse/builder-sdk/env";
-
 const client = createPmtHouseClientFromEnv();
+```
 
-// Option 1: short-lived JWT only
-const userJwt = await client.mintUserAccessToken({
-  externalUserId: "naap-user-123",
-  scope: "sign:job",
+### Mint a user JWT (lazy provisioning)
+
+```ts
+// ensureUserAndMintToken — auto-provisions on 404, no eager upsert needed
+const { access_token } = await client.ensureUserAndMintToken({
+  externalUserId: "user-123",
+  // scope defaults to "sign:job" when omitted
 });
 
-// Option 2: full signer session (JWT + RFC 8693 exchange)
-const session = await client.mintUserSignerSessionToken({
-  externalUserId: "naap-user-123",
-  scope: "sign:job",
+// mintUserAccessToken — throws PmtHouseError({ status: 404, code: "not_found" })
+// if the user hasn't been provisioned yet. Use when you provision eagerly on sign-up.
+const { access_token } = await client.mintUserAccessToken({
+  externalUserId: "user-123",
 });
-// session.access_token — opaque pmth_… bearer for the DMZ
+```
 
-// Option 3: upsert user + mint + exchange in one call
+### Mint a signer session for the DMZ
+
+```ts
+// mintSignerSessionForExternalUser — eager upsert + mint + RFC 8693 exchange in one call
+// Returns SignerSessionToken (opaque pmth_* bearer)
 const session = await client.mintSignerSessionForExternalUser({
-  externalUserId: "naap-user-123",
-  email: "user@example.com",
+  externalUserId: "user-123",
 });
+// session.access_token — opaque pmth_… bearer for the remote signer DMZ
+
+// mintUserSignerToken (from signer/server) — M2M client_credentials mint returning
+// CachedSignerToken with jwt, balanceUsdMicros, lifetimeGrantedUsdMicros, expiresAt.
+// Use createSignerTokenManager for TTL caching across requests (recommended for production).
+import { mintUserSignerToken, createSignerTokenManager } from "@pymthouse/builder-sdk/signer/server";
 ```
 
 ### Check usage balance before signing
