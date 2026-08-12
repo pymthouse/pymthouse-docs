@@ -1,0 +1,374 @@
+---
+title: Builder M2M Payments API
+description: Manage owner wallets, subscriptions, billing state, and end-user payments from your backend using M2M HTTP Basic auth — no dashboard session required.
+---
+
+The Builder M2M Payments API gives your backend full programmatic control over billing — the same operations available in the PymtHouse dashboard, accessible via M2M HTTP Basic auth. Use it to embed prepaid top-up flows, subscription upgrades, and billing dashboards directly in your product.
+
+All billing and usage Builder routes return **`404 Not Found`** for any auth or tenant-mismatch failure. This is deliberate anti-enumeration, not a routing bug.
+
+## API surface overview
+
+Routes are divided into three audiences:
+
+| Surface | Paths | Credential |
+|---|---|---|
+| **Builder (M2M)** | `/api/v1/apps/{clientId}/billing/…`, `/api/v1/builder/apps/{clientId}/usage*` | M2M HTTP Basic (`m2m_…` + `pmth_cs_…`), or Bearer machine token on most non-usage routes |
+| **End-user** | `/api/v1/apps/{clientId}/me/…` or `/api/v1/user/usage*` | Bare `pmth_*` API key, user JWT, or signer JWT |
+| **Internal** | `/api/v1/internal/…` | PymtHouse dashboard session only |
+
+OpenAPI specs:
+
+| Surface | Spec | Docs UI |
+|---|---|---|
+| Public (Builder + End-user) | `GET /api/v1/openapi.json` | `GET /api/v1/docs` |
+| Internal | `GET /api/v1/internal/openapi.json` | `GET /api/v1/internal/docs` |
+
+<Note>
+  **Usage API auth is stricter than the rest of the Builder surface.** `/api/v1/builder/apps/{clientId}/usage*` and the legacy `/api/v1/apps/{clientId}/usage*` aliases require **HTTP Basic**. Bearer access tokens are rejected on those paths.
+</Note>
+
+## Prerequisites
+
+```bash
+export BASE_URL="https://your-pymthouse.example"
+export CLIENT_ID="app_yourClientId"
+export M2M_ID="m2m_yourClientId"
+export M2M_SECRET="pmth_cs_yourSecret"
+```
+
+The M2M credential must be the app's configured M2M OIDC client. Anything else returns `404`.
+
+---
+
+## Canonical billing state
+
+Before building any billing UI or gating user actions, read the canonical spend posture for your app. This single endpoint is the source of truth used by the signer, dashboard, and mint — so a rejection and a read can never disagree.
+
+```http
+GET /api/v1/apps/{clientId}/billing/state
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/state"
+```
+
+Response:
+
+```json
+{
+  "status": "active",
+  "reason": null,
+  "nextAction": null,
+  "balance": {
+    "currency": "USD",
+    "prepaidCredits": "12.50",
+    "autoDebitAvailable": true,
+    "includedUsage": "5.00"
+  }
+}
+```
+
+| Field | Values | Description |
+|---|---|---|
+| `status` | `active` \| `overage` \| `at_risk` \| `blocked` | Current spend posture. |
+| `reason` | string \| null | Machine-readable denial reason when blocked (e.g. `owner_payment_method_required`). |
+| `nextAction` | string \| null | Actionable instruction for the owner when spend is blocked. |
+| `balance` | object | Funding breakdown including prepaid credits, auto-debit availability, and included usage. |
+
+**Poll this endpoint instead of inferring solvency from a failed sign.** A `status: active` response means the next request will be processed.
+
+---
+
+## Owner wallet
+
+Prepaid wallet management over M2M Basic. All wallet operations are scoped to the app owner.
+
+**Base path:** `/api/v1/apps/{clientId}/billing/wallet`
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `…/wallet` | Balance, payment-method-on-file, Pay-Per-Use behavior, settlement order |
+| `POST` | `…/wallet/top-up` | Payment-mode Stripe Checkout for a **$1–$10,000** top-up |
+| `GET` | `…/wallet/invoices` | Past platform invoices (paginated) |
+| `GET` | `…/wallet/payment-methods` | Attached cards (brand + last4 only) |
+| `POST` | `…/wallet/payment-methods` | Setup-mode Stripe Checkout to attach the auto-debit card |
+
+### Read the wallet
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet"
+```
+
+Response includes:
+
+```json
+{
+  "balanceUsdMicros": "12500000",
+  "paymentMethodOnFile": true,
+  "settlement": {
+    "order": "credits_then_auto_debit"
+  },
+  "payPerUse": {
+    "description": "Pay-per-use — charged at every $10.00 of usage (credits first)."
+  }
+}
+```
+
+`settlement.order = "credits_then_auto_debit"` means prepaid credits are consumed first, then the auto-debit rail.
+
+### Top up the wallet
+
+Returns a Stripe Checkout URL for the owner to complete. The checkout amount must be between $1 and $10,000.
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"amountUsd": 50, "successUrl": "https://yourapp.com/billing/success"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/top-up"
+```
+
+Credits land in the wallet when Stripe fires the `checkout.session.completed` webhook. Top-up is **idempotent on the Checkout session id** — Stripe retries and duplicate webhook deliveries credit exactly once.
+
+### Attach a payment card
+
+Returns a Stripe setup-mode Checkout URL. After the owner completes it, promote the card to the default to enable auto-debit:
+
+```bash
+# 1. Get setup Checkout URL
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"successUrl": "https://yourapp.com/billing/card-added"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/payment-methods"
+
+# 2. After redirect, set the card as default
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X PATCH \
+  -H "Content-Type: application/json" \
+  -d '{"ensureDefault": true}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/payment-methods/{paymentMethodId}"
+```
+
+<Warning>
+  **Attaching a card is not the same as enabling auto-debit.** After a setup Checkout completes, you must explicitly set the card as default with `PATCH { ensureDefault: true }` before it will be used for overage collection or subscription charges.
+</Warning>
+
+### List invoices
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/invoices?page=1&pageSize=20"
+```
+
+Returns `{ items, page, pageSize, totalCount }`.
+
+---
+
+## Subscription management
+
+Owner Paid subscription switching is available over M2M Basic. Use these endpoints to list available plans, upgrade, downgrade, or cancel — without a dashboard session.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/apps/{clientId}/billing/tiers` | Selectable Owner Paid tiers |
+| `GET` | `/api/v1/apps/{clientId}/billing/subscription` | Live plan, pending downgrade, payment-method readiness |
+| `PUT` | `/api/v1/apps/{clientId}/billing/subscription` | Upgrade or switch tiers (requires `confirm: true`) |
+| `DELETE` | `/api/v1/apps/{clientId}/billing/subscription` | Schedule downgrade to Sandbox Starter at end of cycle |
+| `DELETE` | `/api/v1/apps/{clientId}/billing/subscription/pending-change` | Cancel a pending downgrade |
+
+### List available tiers
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/tiers"
+```
+
+### Upgrade to a paid tier
+
+Upgrading is a two-step consentful flow: attach a card, then confirm the upgrade separately.
+
+```bash
+# Step 1: Attach a payment card (see wallet section above)
+
+# Step 2: Upgrade (explicit confirm required)
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X PUT \
+  -H "Content-Type: application/json" \
+  -d '{"planKey": "pymthouse_owner_paid", "confirm": true}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/subscription"
+```
+
+The `confirm: true` field is required. Omitting it returns a preview without making changes.
+
+### Cancel at end of cycle
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X DELETE \
+  -H "Content-Type: application/json" \
+  -d '{"confirm": true}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/subscription"
+```
+
+Schedules a downgrade to Sandbox Starter at the end of the current billing cycle. To revert before the cycle ends:
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X DELETE \
+  -H "Content-Type: application/json" \
+  -d '{"confirm": true}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/subscription/pending-change"
+```
+
+### Payment methods on the owner wallet
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/apps/{clientId}/billing/payment-methods` | List attached cards |
+| `POST` | `/api/v1/apps/{clientId}/billing/payment-methods` | Setup-mode Checkout |
+| `PATCH` | `/api/v1/apps/{clientId}/billing/payment-methods/{id}` | Set default (`{ ensureDefault: true }`) |
+| `DELETE` | `/api/v1/apps/{clientId}/billing/payment-methods/{id}` | Unlink a card |
+
+---
+
+## Overage gate and soft-negative ceiling
+
+When a user's prepaid balance reaches $0, spending can continue if the right payment rail is available. This avoids hard stops mid-stream.
+
+| `billingMode` | Overage requires |
+|---|---|
+| `owner_rollup` | Owner on a Paid tier **and** a default chargeable payment method on the owner wallet |
+| `merchant` | Connect end-user default payment method **and** an overage-capable plan |
+
+Continued spend is bounded by a **soft-negative debt ceiling** configured on your app:
+
+- `0` means no ceiling (unlimited overage).
+- Any positive value must be **≥ $2**. Values below $2 are rejected because sub-$0.50 invoices cannot be collected through Stripe.
+- Hitting the ceiling denies with `debt_ceiling_reached`.
+
+Collection is invoice-based (never a PaymentIntent from PymtHouse):
+
+- A fire-and-forget trigger invoices accumulated usage before the ceiling is reached.
+- Billing profiles use **anchored daily** collection, capping unbilled exposure to ~24h.
+
+### Force collection now
+
+Trigger immediate invoicing of accumulated unbilled usage. Idempotent within the trigger cooldown:
+
+```bash
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X POST \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/collect"
+```
+
+Returns `{ "collected": true }` on success, or `{ "skipped": true, "reason": "rate_limited" }` within the cooldown period. Returns `{ "skipped": true, "reason": "below_floor" }` when unbilled debt is below the $0.50 Stripe minimum.
+
+---
+
+## Pay-Per-Use plans
+
+Pay-Per-Use (`type: "usage"`) plans charge when accumulated usage crosses a threshold — credits first, then auto-debit — rather than on a billing cycle.
+
+The threshold is set on the plan as `chargeThresholdUsd` (e.g. `10.00` charges at every $10 of accumulated usage). The resolved behavior is returned in the wallet summary as display copy:
+
+```
+"Pay-per-use — charged at every $10.00 of usage (credits first)."
+```
+
+<Note>
+  Pay-Per-Use plans keep a nominal internal monthly billing cycle for OpenMeter compatibility. Do not surface this cycle to your users — the threshold is the only charging semantic that matters.
+</Note>
+
+See [Plans](/integration/plans) for creating and configuring Pay-Per-Use plans.
+
+---
+
+## End-user billing
+
+Manage invoices and payment methods for individual end-users in your app.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `.../users/{externalUserId}/invoices` | Invoice list (`{ items, page, pageSize, totalCount }`) |
+| `GET` | `.../users/{externalUserId}/invoices/{invoiceId}/hosted-url` | Stripe hosted invoice URL and PDF link |
+| `GET` | `.../users/{externalUserId}/payment-methods` | List attached cards |
+| `POST` | `.../users/{externalUserId}/payment-methods` | Setup-mode Checkout (does not change plan) |
+| `POST` | `.../users/{externalUserId}/subscription/change` | Switch plan; paid targets may return a Connect `checkoutUrl` |
+
+```bash
+# List end-user invoices
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/users/user-123/invoices"
+
+# Get hosted invoice URL
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/users/user-123/invoices/{invoiceId}/hosted-url"
+```
+
+Free, Starter, and draft plan targets are never revenue-gated. Migrating users off a phased-out paid plan continues working after switching to `owner_rollup`.
+
+---
+
+## Error codes
+
+Billing denials use **RFC 9457 problem details** (`Content-Type: application/problem+json`) with a machine-readable `code` field:
+
+| Condition | Status | `code` |
+|---|---|---|
+| Owner wallet empty, no payment method | `402` | `owner_payment_method_required` |
+| Per-app end-user cap reached | `403` | `end_user_cap_reached` |
+| Paid plan / checkout without Connect | `403` | `stripe_connect_required` |
+| Connect started, capabilities not yet granted | `403` | `stripe_connect_pending` |
+| Unbilled debt at soft-negative ceiling | — | `debt_ceiling_reached` |
+| Collect called inside trigger cooldown | — | `rate_limited` |
+
+Auth or tenant-match failures on Builder billing routes always return **`404 Not Found`**, never `401`/`403`.
+
+---
+
+## Stripe Connect
+
+Stripe Connect is used for merchant-mode end-user invoicing and checkout. Builder M2M accepts Basic auth for wallet and subscription operations; Connect OAuth itself is initiated from a provider dashboard session.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/apps/{clientId}/billing/stripe` | Provider session or M2M Basic | Stripe Connect status |
+| `POST` | `/api/v1/apps/{clientId}/billing/stripe/connect` | App owner or platform admin | Start Stripe Connect OAuth flow |
+| `DELETE` | `/api/v1/apps/{clientId}/billing/stripe` | App owner or platform admin | Disconnect Stripe |
+| `POST` | `/api/v1/apps/{clientId}/billing/checkout` | Provider session | End-user checkout: `{ planId, externalUserId, successUrl?, cancelUrl? }` |
+
+<Note>
+  Merchant-mode settlement runs through OpenMeter Custom Invoicing on the Connect rail. Owner rollup stays on the platform Stripe app. Your tenants never receive direct OpenMeter access — all mutations and reads go through Builder API routes.
+</Note>
+
+---
+
+## Full example: embed a billing dashboard
+
+```bash
+# 1. Check spend posture
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/state"
+
+# 2. Show wallet balance and recent invoices
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet"
+
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/invoices"
+
+# 3. Let the owner top up
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"amountUsd": 20, "successUrl": "https://yourapp.com/billing?topup=success"}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/top-up"
+
+# 4. List available tiers and upgrade
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/tiers"
+
+curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X PUT \
+  -H "Content-Type: application/json" \
+  -d '{"planKey": "pymthouse_owner_paid", "confirm": true}' \
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/subscription"
+```
+
+For the aggregate billing summary (cycle totals, timeline, overage), see [Billing summary](/integration/billing).

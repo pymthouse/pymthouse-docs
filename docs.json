@@ -51,7 +51,8 @@
             "pages": [
               "integration/billing",
               "integration/plans",
-              "integration/usage-api"
+              "integration/usage-api",
+              "integration/payments"
             ]
           },
           {
