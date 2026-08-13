@@ -51,7 +51,7 @@ Response:
 ```json
 {
   "dmzUrl": "https://dmz.example.com",
-  "jwksUrl": "https://your-pymthouse.example/api/v1/oidc/jwks",
+  "jwksUrl": "https://pymthouse.com/api/v1/oidc/jwks",
   "webhookUrl": "https://your-app.example/authorize",
   "meteringMode": "kafka"
 }
@@ -215,7 +215,7 @@ export async function POST(request: Request) {
 | Variable | Description |
 | --- | --- |
 | `WEBHOOK_SECRET` | Shared secret between go-livepeer DMZ and your webhook handler. Set on the DMZ via `-remoteSignerWebhookSecret`. |
-| `JWT_ISSUER` | OIDC issuer URL for JWT validation (e.g. `https://your-pymthouse.example/api/v1/oidc`). |
+| `JWT_ISSUER` | OIDC issuer URL for JWT validation (e.g. `https://pymthouse.com/api/v1/oidc`). |
 | `JWT_AUDIENCE` | Expected `aud` claim in end-user JWTs. |
 | `CLAIM_CLIENT_ID` | JWT claim to use as the client id (default `azp`; for Auth0 set to `azp`). |
 

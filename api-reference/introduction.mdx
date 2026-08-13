@@ -25,7 +25,7 @@ Open `/api/v1/docs` on your PymtHouse deployment to browse and try every endpoin
 All API endpoints share one base URL:
 
 ```
-https://your-pymthouse.example
+https://pymthouse.com
 ```
 
 OIDC endpoints live under `/api/v1/oidc/…`. Builder API endpoints live under `/api/v1/apps/{clientId}/…`. Usage API canonical paths live under `/api/v1/builder/apps/{clientId}/…`.
@@ -33,7 +33,7 @@ OIDC endpoints live under `/api/v1/oidc/…`. Builder API endpoints live under `
 Always resolve OIDC endpoint URLs from the discovery document at runtime:
 
 ```bash
-curl https://your-pymthouse.example/api/v1/oidc/.well-known/openid-configuration
+curl https://pymthouse.com/api/v1/oidc/.well-known/openid-configuration
 ```
 
 ---
@@ -51,7 +51,7 @@ Authorization: Basic base64(m2m_client_id:m2m_client_secret)
 Example:
 ```bash
 curl -u "m2m_yourId:pmth_cs_yourSecret" \
-  "https://your-pymthouse.example/api/v1/apps/app_yourId/users"
+  "https://pymthouse.com/api/v1/apps/app_yourId/users"
 ```
 
 ### Bearer token (machine or user JWT)
@@ -64,11 +64,11 @@ TOKEN=$(curl -sS \
   -d "client_id=m2m_yourId" \
   -d "client_secret=pmth_cs_yourSecret" \
   -d "scope=users:write users:token" \
-  "https://your-pymthouse.example/api/v1/oidc/token" \
+  "https://pymthouse.com/api/v1/oidc/token" \
   | jq -r '.access_token')
 
 curl -H "Authorization: Bearer $TOKEN" \
-  "https://your-pymthouse.example/api/v1/apps/app_yourId/users"
+  "https://pymthouse.com/api/v1/apps/app_yourId/users"
 ```
 
 ### Provider session (dashboard-only routes)
