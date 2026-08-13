@@ -62,8 +62,8 @@ curl -sS \
 {
   "device_code": "Ag_EE…long…",
   "user_code": "ABCD-EFGH",
-  "verification_uri": "https://your-pymthouse.example/oidc/device",
-  "verification_uri_complete": "https://your-pymthouse.example/oidc/device?user_code=ABCD-EFGH&client_id=app_…&iss=https%3A%2F%2F…",
+  "verification_uri": "https://pymthouse.com/oidc/device",
+  "verification_uri_complete": "https://pymthouse.com/oidc/device?user_code=ABCD-EFGH&client_id=app_…&iss=https%3A%2F%2F…",
   "expires_in": 600,
   "interval": 5
 }
@@ -81,11 +81,11 @@ curl -sS \
 Show either the short URL with the `user_code` to type in, or present the `verification_uri_complete` as a clickable link or QR code.
 
 ```
-Open https://your-pymthouse.example/oidc/device
+Open https://pymthouse.com/oidc/device
 and enter the code: ABCD-EFGH
 
 Or scan the QR code / click this link:
-https://your-pymthouse.example/oidc/device?user_code=ABCD-EFGH&…
+https://pymthouse.com/oidc/device?user_code=ABCD-EFGH&…
 ```
 
 ## Step 3 — Poll for the token
@@ -134,8 +134,8 @@ When `device_third_party_initiate_login` is enabled on the public client, unauth
 
 ```
 GET https://yourapp.example/login/initiate
-  ?iss=https%3A%2F%2Fyour-pymthouse.example%2Fapi%2Fv1%2Foidc
-  &target_link_uri=https%3A%2F%2Fyour-pymthouse.example%2Fapi%2Fv1%2Foidc%2Fdevice%3F…
+  ?iss=https%3A%2F%2Fpymthouse.com%2Fapi%2Fv1%2Foidc
+  &target_link_uri=https%3A%2F%2Fpymthouse.com%2Fapi%2Fv1%2Foidc%2Fdevice%3F…
   &login_hint=<optional>
 ```
 

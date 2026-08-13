@@ -1,13 +1,123 @@
 ---
 title: Deprecated routes and migrations
-description: Migration guide for removed endpoints. The hosted signer proxy, synchronous signed-ticket ingest, and legacy subscription and credits endpoints have been replaced.
+description: Migration guide for removed and deprecated endpoints across PymtHouse versions.
 ---
 
-This page documents endpoints that have been **removed** (returning `410 Gone`) or **deprecated** in PymtHouse v0.2.x. Follow the migration steps to update your integration.
+This page documents endpoints that have been **removed** (returning `410 Gone`) or **deprecated** across PymtHouse versions. Follow the migration steps for your version to update your integration.
 
 ---
 
-## Hosted signer proxy removed (`/api/signer/*`)
+## v0.3.5 – v0.3.7 breaking changes
+
+### Auth validate endpoint changed
+
+```diff
+- GET /api/v1/auth/validate
++ POST /api/v1/auth/validate
+  Content-Type: application/json
+  { "key": "pmth_…" }
+```
+
+Set `BPP_VALIDATE_V2=1` in your environment to opt into the new POST form. The `GET` form is removed.
+
+---
+
+### Builder API surface split
+
+Routes are now grouped by audience. Usage API paths moved to the canonical `builder` prefix:
+
+```diff
+- GET /api/v1/apps/{clientId}/usage
++ GET /api/v1/builder/apps/{clientId}/usage
+```
+
+The legacy `/api/v1/apps/{clientId}/usage*` paths remain as **deprecated M2M-only aliases**. Migrate to `/api/v1/builder/apps/{clientId}/usage*`.
+
+<Warning>
+  **Bearer tokens are rejected on all usage paths.** Use HTTP Basic auth (`-u m2m_id:pmth_cs_secret`) for all usage queries, including the legacy aliases.
+</Warning>
+
+---
+
+### Signer session exchange endpoint replaced
+
+```diff
+- POST /api/v1/apps/{clientId}/auth/api-key/signer-session
++ POST /api/v1/apps/{clientId}/oidc/token
+  grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+  subject_token=pmth_...
+  subject_token_type=urn:ietf:params:oauth:token-type:access_token
+
+- POST /api/v1/apps/{clientId}/auth/api-key/token
++ POST /api/v1/apps/{clientId}/oidc/token
+  (same RFC 8693 form)
+```
+
+The issuer-level endpoint `POST /api/v1/oidc/token` is also accepted and resolves the app from the credential.
+
+---
+
+### App-level keys replaced by per-user keys
+
+```diff
+- GET    /api/v1/apps/{clientId}/keys
+- POST   /api/v1/apps/{clientId}/keys
+- DELETE /api/v1/apps/{clientId}/keys
++ GET    /api/v1/apps/{clientId}/users/{externalUserId}/keys
++ POST   /api/v1/apps/{clientId}/users/{externalUserId}/keys
++ DELETE /api/v1/apps/{clientId}/users/{externalUserId}/keys
+```
+
+Builder-minted per-user keys now use the composite format `app_<24hex>_<secret>` so the remote-signer identity webhook can recover `client_id` from the credential. Personal keys remain bare `pmth_<hex>`.
+
+---
+
+### Discovery pricing endpoint removed
+
+```diff
+- GET /api/v1/apps/{clientId}/discovery/pricing
+```
+
+Removed in v0.3.7. Read routing information from the signer routing endpoint instead:
+
+```http
+GET /api/v1/apps/{clientId}/signer/routing
+Authorization: Basic base64(m2m_id:m2m_secret)
+```
+
+---
+
+### Auto top-up removed
+
+The per-user off-session-charge (auto top-up) design was built and retired mid-v0.3.7 development in favor of invoice-based collection. Do not build against any `pymthouse_auto_topup` metadata. Use [Builder M2M Payments API → Overage gate](/integration/payments#overage-gate-and-soft-negative-ceiling) for ongoing spend collection.
+
+---
+
+### Subscription CRUD (v0.3.7)
+
+```diff
+- GET/POST/DELETE /api/v1/subscriptions
+```
+
+Replaced by:
+
+| Old | New |
+|---|---|
+| `POST /api/v1/subscriptions` | `POST .../users` + OpenMeter checkout |
+| `DELETE /api/v1/subscriptions` | `DELETE .../plans?planId=` |
+| `GET /api/v1/subscriptions` | `GET .../plans` or `GET .../users/{id}/subscription` |
+
+---
+
+### Balance gate `expiryTtl`
+
+The signer now receives `expiryTtl` explicitly. If you cached gate decisions, verify your cache TTL assumptions match the new value.
+
+---
+
+## v0.2.x breaking changes
+
+### Hosted signer proxy removed (`/api/signer/*`)
 
 **Affected routes (all return `410 Gone`):**
 
@@ -67,7 +177,7 @@ See [Signer routing](/integration/signer-routing) for the full setup guide.
 
 ---
 
-## Synchronous signed-ticket ingest removed
+### Synchronous signed-ticket ingest removed
 
 **Affected route:**
 
@@ -102,7 +212,7 @@ curl -sS \
 
 ---
 
-## Subscription CRUD removed
+### Subscription CRUD removed (v0.2.x)
 
 **Affected routes:**
 
@@ -116,7 +226,7 @@ Manage subscriptions through the plans CRUD API (dashboard session) or the OpenM
 
 ---
 
-## Deprecated `credits` alias
+### Deprecated `credits` alias
 
 **Affected routes:**
 
@@ -147,7 +257,7 @@ SDK:
 
 ---
 
-## App manifest routes deprecated
+### App manifest routes deprecated
 
 **Affected routes:**
 
@@ -168,7 +278,7 @@ The manifest API was used to configure discoverable pipeline/model combinations 
 
 ---
 
-## Deprecated discovery profiles
+### Deprecated discovery profiles
 
 **Affected routes:**
 
@@ -185,6 +295,12 @@ Discovery profiles are a legacy mechanism for expressing pipeline/model capabili
 
 | Route | Status | Replacement |
 | --- | --- | --- |
+| `GET /api/v1/auth/validate` | Removed | `POST /api/v1/auth/validate` with `{ key }` |
+| `GET/POST/DELETE /api/v1/apps/{clientId}/keys` | Replaced | `…/users/{externalUserId}/keys` |
+| `POST .../auth/api-key/signer-session` | Replaced | `POST .../oidc/token` (RFC 8693) |
+| `POST .../auth/api-key/token` | Replaced | `POST .../oidc/token` (RFC 8693) |
+| `GET /api/v1/apps/{clientId}/usage*` | Deprecated alias | `GET /api/v1/builder/apps/{clientId}/usage*` |
+| `GET /api/v1/apps/{clientId}/discovery/pricing` | Removed | `GET .../signer/routing` |
 | `POST /api/signer/generate-live-payment` | `410 Gone` | `createDirectSignerProxyHandler` + DMZ |
 | `POST /api/signer/sign-orchestrator-info` | `410 Gone` | Direct DMZ |
 | `POST /api/signer/sign-byoc-job` | `410 Gone` | Direct DMZ |

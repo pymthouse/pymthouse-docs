@@ -79,10 +79,10 @@ Three things you configure once and reuse everywhere:
     Cycle totals, timeline, overage, and USD breakdowns in one API call.
   </Card>
   <Card title="Plans" icon="layer-group" href="/integration/plans">
-    Pricing tiers with included allowances and overage rates. Synced to OpenMeter.
+    Pricing tiers, Pay-Per-Use thresholds, and included allowances. Synced to OpenMeter.
   </Card>
-  <Card title="Stripe Connect" icon="credit-card" href="/integration/billing#merchant-billing-stripe-connect">
-    Let users pay you directly. Merchant Connect setup and checkout flows.
+  <Card title="Payments API" icon="credit-card" href="/integration/payments">
+    Builder M2M: owner wallet, top-up, subscription switching, overage gate, and end-user invoices — no dashboard session needed.
   </Card>
 </CardGroup>
 
@@ -97,7 +97,7 @@ Three things you configure once and reuse everywhere:
 OIDC discovery publishes all endpoint URLs for your deployment. Always resolve from discovery rather than hard-coding paths:
 
 ```bash
-curl https://your-pymthouse.example/api/v1/oidc/.well-known/openid-configuration
+curl https://pymthouse.com/api/v1/oidc/.well-known/openid-configuration
 ```
 
 Local development issuer: `http://localhost:3001/api/v1/oidc`

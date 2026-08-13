@@ -20,7 +20,7 @@ Mint a user-scoped JWT when:
 - The requested scope must be listed in the **public** client's `allowed_scopes` — not the M2M client's. For example, to request `sign:job`, the public `app_…` client must have `sign:job` in its `allowed_scopes`.
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
+export BASE_URL="https://pymthouse.com"
 export CLIENT_ID="app_yourClientId"       # public client id
 export M2M_ID="m2m_yourClientId"
 export M2M_SECRET="pmth_cs_yourSecret"

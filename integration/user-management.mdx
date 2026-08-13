@@ -29,7 +29,7 @@ Never construct Builder API paths with internal PymtHouse IDs — always use `ex
 ## Prerequisites
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
+export BASE_URL="https://pymthouse.com"
 export CLIENT_ID="app_yourClientId"       # public client id
 export M2M_ID="m2m_yourClientId"
 export M2M_SECRET="pmth_cs_yourSecret"
@@ -153,7 +153,7 @@ curl -sS -X DELETE \
 
 ## Per-user API keys
 
-Long-lived opaque API keys (`pmth_*`) can be issued per-user and exchanged for short-lived JWTs or signer sessions without repeating device login.
+Long-lived API keys can be issued per-user by your backend and exchanged for short-lived JWTs or signer sessions without repeating device login.
 
 ```http
 GET    /api/v1/apps/{clientId}/users/{externalUserId}/keys
@@ -164,35 +164,56 @@ Authorization: Basic base64(m2m_id:m2m_secret)
 
 **GET** returns the list of active API keys for the user.
 
-**POST** creates a new key. Response includes the full `pmth_*` secret (shown once only):
+**POST** creates a new key. Builder-minted keys use a **composite format** (`app_<24hex>_<secret>`) so that pathless callers can recover the app `client_id` from a single Bearer header. Response includes the full key (shown once only):
 
 ```json
 {
   "keyId": "key-uuid",
-  "apiKey": "pmth_ak_...",
+  "apiKey": "app_a1b2c3d4e5f6a1b2c3d4e5f6_pmth_...",
   "createdAt": "2026-04-01T00:00:00.000Z"
 }
 ```
 
 **DELETE** with `?keyId=<uuid>` revokes the key immediately.
 
-Exchange a per-user API key for a short-lived JWT:
+<Note>
+  **Personal keys** (issued directly to an app owner or via network self-serve) stay bare `pmth_<hex>`. Builder-minted per-user keys are composite so that the remote-signer identity webhook can recover `client_id` from the credential alone. Both key types can be exchanged for signer sessions — see [Token exchange](/integration/token-exchange).
+</Note>
 
-```http
-POST /api/v1/apps/{clientId}/auth/api-key/token
-Authorization: Bearer pmth_ak_...
-Content-Type: application/json
+Exchange a per-user API key for a signer session via RFC 8693:
 
-{ "scope": "sign:job" }
+```bash
+curl -sS \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=app_a1b2c3d4e5f6..._pmth_..." \
+  --data-urlencode "subject_token_type=urn:pymthouse:oauth:token-type:api_key" \
+  "${BASE_URL}/api/v1/oidc/token"
 ```
 
-See [API keys](/integration/api-keys) for the full exchange flow.
+See [Token exchange](/integration/token-exchange) for the full exchange flow.
+
+---
+
+## End-user billing
+
+Manage invoices and payment methods for individual end-users via M2M Basic:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `.../users/{externalUserId}/invoices` | Invoice list (`{ items, page, pageSize, totalCount }`) |
+| `GET` | `.../users/{externalUserId}/invoices/{invoiceId}/hosted-url` | Stripe hosted URL and PDF link |
+| `GET` | `.../users/{externalUserId}/payment-methods` | List attached cards |
+| `POST` | `.../users/{externalUserId}/payment-methods` | Setup-mode Checkout (does not change plan) |
+| `POST` | `.../users/{externalUserId}/subscription/change` | Switch plan; paid targets may return a Connect `checkoutUrl` |
+
+See [Builder M2M Payments API → End-user billing](/integration/payments#end-user-billing) for the full reference.
 
 ---
 
 ## App-level API keys
 
-App-level API keys (tied to a subscription) are managed separately:
+App-level keys (personal keys tied to the app owner) are managed separately:
 
 ```http
 GET    /api/v1/apps/{clientId}/keys
@@ -200,7 +221,7 @@ POST   /api/v1/apps/{clientId}/keys
 DELETE /api/v1/apps/{clientId}/keys
 ```
 
-Auth: provider dashboard session. These keys are suitable for integrations where a single credential covers the entire app rather than individual users.
+Auth: provider dashboard session. Personal keys are bare `pmth_<hex>`. They are suitable for integrations where a single credential covers the entire app rather than individual users.
 
 ---
 

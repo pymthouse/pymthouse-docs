@@ -97,11 +97,12 @@ Content-Type: application/json
 | Field | Required | Notes |
 | --- | --- | --- |
 | `name` | Yes | Display name. Reserved names (`Network Price` and the internal default) are rejected. |
-| `type` | No | Defaults to `free`. `subscription` requires `includedUnits` and `overageRateWei` (non-negative integer strings). |
+| `type` | No | Defaults to `free`. `subscription` requires `includedUnits` and `overageRateWei` (non-negative integer strings). `usage` enables Pay-Per-Use threshold charging. |
 | `includedUsdMicros` | No | USD micros allowance for OpenMeter subscription entitlement. |
 | `overageRateUsd` | No | Retail USD rate per USD micro for OpenMeter rate cards. |
+| `chargeThresholdUsd` | No | **Pay-Per-Use only.** Charge when accumulated usage reaches this USD amount. Valid range: `$0 < x ≤ $1,000,000`, two decimal places. Required for `type: "usage"` plans with threshold charging. |
 | `priceAmount`, `priceCurrency` | No | Defaults `0` / `USD`. |
-| `billingCycle` | No | `"monthly"` (default). |
+| `billingCycle` | No | `"monthly"` (default). For Pay-Per-Use plans, a nominal monthly cycle is kept internally for OpenMeter compatibility — do not surface it to users. |
 | `status` | No | `active` or `inactive`; default `active`. Publishing with `status: active` triggers OpenMeter sync when `OPENMETER_URL` is configured. |
 | `capabilities` | No | Array of `{ pipeline, modelId, slaTargetScore?, slaTargetP95Ms?, maxPricePerUnit?, retailRateUsd? }`. Each entry must reference discoverable (non-excluded) pipeline/model combinations. |
 
@@ -198,7 +199,7 @@ Stripe Connect is for invoicing/checkout, not for provisioning plans in OpenMete
 Call **GET/POST/PUT/DELETE** from a **trusted context** that holds the provider dashboard session cookie.
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
+export BASE_URL="https://pymthouse.com"
 export CLIENT_ID="app_yourClientId"
 export SESSION_COOKIE="next-auth.session-token=..."
 
@@ -228,6 +229,10 @@ curl -sS -X PUT -b "${SESSION_COOKIE}" \
 ```
 
 Do not expose plan mutation to end users; keep session cookies server-side or use the in-app UI.
+
+## Owner Paid subscription switching
+
+Switching an app's Owner Paid subscription is available over Builder M2M Basic — no dashboard session required. See [Builder M2M Payments API → Subscription management](/integration/payments#subscription-management) for the full reference.
 
 ## Implementation reference
 

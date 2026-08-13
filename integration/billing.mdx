@@ -5,6 +5,10 @@ description: Retrieve the current billing period, active plan, usage totals, dai
 
 The billing summary endpoint gives your backend a single snapshot of everything relevant to the current billing cycle: which plan the app is on, the active subscription period, cumulative usage totals, a day-by-day fee timeline, overage charges, and owner/retail USD breakdowns.
 
+<Note>
+  For programmatic wallet management, subscription switching, and billing state checks from your backend, see [Builder M2M Payments API](/integration/payments). This page covers the aggregate billing summary endpoint.
+</Note>
+
 All monetary values are **wei as decimal strings** to preserve precision across the full BigInt range. USD micro values (integer strings, `1000000` = $1.00) are computed once at signing time using the ETH/USD oracle and stored immutably.
 
 ## Authentication
@@ -137,6 +141,8 @@ No query parameters.
 
 For `free` plans, `overageUnits` and `overageWei` are always `"0"`.
 
+**Pay-Per-Use plans** (`type: "usage"` with `chargeThresholdUsd` set) charge when accumulated usage crosses a threshold rather than on a billing cycle. The resolved charging behavior appears in `GET .../billing/wallet` as human-readable copy. See [Plans](/integration/plans) and [Builder M2M Payments API](/integration/payments) for threshold configuration and wallet management.
+
 ## Starter plan
 
 Every app has a **Starter** plan created automatically (`isStarterDefault: true`). It is separate from custom billing plans and from the Network Price discovery plan. Starter carries an `includedUsdMicros` allowance (default `5000000` = $5.00) and is automatically synced to OpenMeter.
@@ -168,18 +174,16 @@ Auth: provider dashboard session (read). Returns a list of invoices for the app'
 
 ## Merchant billing (Stripe Connect)
 
-Stripe Connect is used for invoicing and end-user checkout, not for plan provisioning in OpenMeter.
+Stripe Connect is used for invoicing and end-user checkout, not for plan provisioning in OpenMeter. Builder M2M Basic auth is accepted for wallet and subscription operations; Connect OAuth itself requires a provider dashboard session.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/apps/{clientId}/billing/stripe` | Provider session | Stripe Connect status for the app |
+| `GET` | `/api/v1/apps/{clientId}/billing/stripe` | Provider session or M2M Basic | Stripe Connect status for the app |
 | `POST` | `/api/v1/apps/{clientId}/billing/stripe/connect` | App owner or platform admin | Start Stripe Connect OAuth flow |
 | `DELETE` | `/api/v1/apps/{clientId}/billing/stripe` | App owner or platform admin | Disconnect Stripe |
 | `POST` | `/api/v1/apps/{clientId}/billing/checkout` | Provider session | End-user checkout: `{ planId, externalUserId, successUrl?, cancelUrl? }` |
 
-<Note>
-  All Stripe Connect operations require a provider dashboard session. M2M Basic auth is not accepted on these routes.
-</Note>
+For the full M2M payments surface including owner wallet, subscription switching, and overage gate, see [Builder M2M Payments API](/integration/payments).
 
 ## Period fallback
 
@@ -188,7 +192,7 @@ When the app has no active subscription, the billing period defaults to the **cu
 ## Example
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
+export BASE_URL="https://pymthouse.com"
 export CLIENT_ID="app_yourClientId"
 export M2M_ID="m2m_yourClientId"
 export M2M_SECRET="pmth_cs_yourSecret"

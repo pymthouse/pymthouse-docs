@@ -13,6 +13,11 @@ Use this pattern when your backend needs to:
 - Mint user-scoped JWTs for end-users already known to your system.
 - Read aggregated usage data from the Usage API.
 - Complete a device authorization on behalf of a user (RFC 8693 token exchange).
+- Manage owner wallets, subscriptions, and billing state (see [Builder M2M Payments API](/integration/payments)).
+
+<Warning>
+  **Usage API paths require HTTP Basic auth.** Bearer access tokens are rejected on `/api/v1/builder/apps/{clientId}/usage*` and the legacy `/api/v1/apps/{clientId}/usage*` aliases. Use HTTP Basic for all usage queries.
+</Warning>
 
 Do **not** use this pattern for interactive user login flows. For those, see [Interactive login](/integration/interactive-login) or [Device flow](/integration/device-flow).
 
@@ -22,7 +27,7 @@ Do **not** use this pattern for interactive user login flows. For those, see [In
 - The M2M client has been granted the scopes required by the endpoint you are calling.
 
 ```bash
-export BASE_URL="https://your-pymthouse.example"
+export BASE_URL="https://pymthouse.com"
 export M2M_ID="m2m_yourClientId"
 export M2M_SECRET="pmth_cs_yourSecret"
 ```
@@ -61,7 +66,7 @@ curl -sS \
 
 ## Option B: HTTP Basic auth
 
-For single calls where acquiring a separate token adds unnecessary latency, pass the M2M credentials directly using HTTP Basic auth (RFC 7617). PymtHouse accepts Basic auth on all Builder API endpoints.
+For single calls where acquiring a separate token adds unnecessary latency, pass the M2M credentials directly using HTTP Basic auth (RFC 7617). PymtHouse accepts Basic auth on all Builder API endpoints, including billing and usage routes.
 
 ```bash
 curl -sS \

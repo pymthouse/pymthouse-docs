@@ -18,10 +18,17 @@ All RFC 8693 token exchange requests:
 | Parameter | Value |
 | --- | --- |
 | `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
-| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
-| `subject_token` | A valid access token issued by this PymtHouse issuer |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` (JWT) **or** `urn:pymthouse:oauth:token-type:api_key` (bare/composite API key) |
+| `subject_token` | A valid access token **or bare `pmth_*` API key** issued by this PymtHouse issuer |
 
-Authentication: **M2M HTTP Basic auth** (`Authorization: Basic base64(m2m_id:m2m_secret)`) is required for all token exchange calls.
+Authentication: **M2M HTTP Basic auth** (`Authorization: Basic base64(m2m_id:m2m_secret)`) is required for JWT subject-token exchange operations and optional for API-key subject-token exchange.
+
+Two endpoint forms are accepted:
+
+| Endpoint | App resolution |
+|---|---|
+| `POST /api/v1/oidc/token` | Resolved from the `subject_token` credential |
+| `POST /api/v1/apps/{clientId}/oidc/token` | Path `{clientId}` must match the credential's app |
 
 ---
 
@@ -108,7 +115,59 @@ await client.approveDeviceLogin({
 
 ---
 
-## Signer session exchange
+## API key signer session exchange
+
+Use this operation to exchange a **bare `pmth_*` personal API key** directly for a signer session without first minting a user JWT. This is useful for CLI tools and personal-key workflows.
+
+```bash
+ISSUER="${BASE_URL}/api/v1/oidc"
+M2M_ID="m2m_yourClientId"
+M2M_SECRET="pmth_cs_yourSecret"
+API_KEY="pmth_..."   # bare personal key
+
+curl -sS \
+  -u "${M2M_ID}:${M2M_SECRET}" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=${API_KEY}" \
+  --data-urlencode "subject_token_type=urn:pymthouse:oauth:token-type:api_key" \
+  "${ISSUER}/token"
+```
+
+Both endpoint forms are supported. When using the app-scoped form, the path `{clientId}` must match the API key's app:
+
+```bash
+"${BASE_URL}/api/v1/apps/${CLIENT_ID}/oidc/token"
+```
+
+The response is the canonical **`SignerSession`** envelope:
+
+```json
+{
+  "access_token": "pmth_signer_session_...",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "scope": "sign:job",
+  "signer_url": "https://signer.example/dmz",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000"
+}
+```
+
+| Field | Description |
+|---|---|
+| `access_token` | Opaque signer session token. Pass as Bearer to the remote signer DMZ. |
+| `signer_url` | DMZ signing endpoint (present when routing is configured). |
+| `balanceUsdMicros` | Current spend balance. Gate access on this value. |
+| `lifetimeGrantedUsdMicros` | Total lifetime allowance granted. |
+
+<Warning>
+  Never pass a client secret (`pmth_cs_*`) as `subject_token`. Confidential clients authenticate via HTTP Basic, not as subject tokens.
+</Warning>
+
+---
+
+## Signer session exchange (from user JWT)
 
 Use this operation to exchange a short-lived user access token for a long-lived opaque remote signer session token (`pmth_*`).
 
@@ -152,7 +211,11 @@ Omit `resource`, or set `resource` to the issuer URL (`{issuer}`) if your client
   "access_token": "pmth_signer_session_longtoken...",
   "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
   "token_type": "Bearer",
-  "expires_in": 86400
+  "expires_in": 86400,
+  "scope": "sign:job",
+  "signer_url": "https://signer.example/dmz",
+  "balanceUsdMicros": "4200000",
+  "lifetimeGrantedUsdMicros": "5000000"
 }
 ```
 
