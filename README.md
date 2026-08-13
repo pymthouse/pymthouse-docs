@@ -30,10 +30,20 @@ npm run validate
 
 ## Deploy to docs.pymthouse.com
 
-1. Create a Mintlify account and install the [Mintlify GitHub app](https://mintlify.com/docs/settings/github) on this repository.
-2. In the [Mintlify dashboard](https://dashboard.mintlify.com), create a deployment that points at **this** repository. Set the **docs root** to the **repository root** (the directory that contains `docs.json`).
-3. Under **Custom domain**, add `docs.pymthouse.com` and complete the DNS steps Mintlify provides (typically a `CNAME` to Mintlify’s target).
-4. Push changes to your default branch; Mintlify deploys on merge.
+Mintlify is connected to this repository’s **`main`** branch. Merging to `main` deploys via the GitHub App. CI also validates every pull request and triggers a [Mintlify update](https://www.mintlify.com/docs/api/update/trigger) after merges.
+
+### GitHub Actions
+
+The workflow in `.github/workflows/docs.yml` runs `mint validate` on pull requests and pushes, then publishes on `main` (and on **Actions → Docs → Run workflow**).
+
+Add these in the GitHub repo settings:
+
+| Kind | Name | Source |
+|------|------|--------|
+| Secret | `MINTLIFY_API_KEY` | Admin API key from [API keys](https://app.mintlify.com/settings/organization/api-keys) |
+| Variable | `MINTLIFY_PROJECT_ID` | Project ID from the same page |
+
+Keep the [Mintlify GitHub App](https://www.mintlify.com/docs/deploy/github) installed on this repository, and keep **Git settings** pointed at `pymthouse/pymthouse-docs` / `main` (not `docs/main`). The leftover `docs/main` branch is the Mintlify starter snapshot; do not deploy from it.
 
 ## Keeping content in sync with the app repo
 

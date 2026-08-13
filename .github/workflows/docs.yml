@@ -1,0 +1,50 @@
+name: Docs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate Mintlify site
+        run: npx --yes mint@latest validate
+
+  publish:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Mintlify deployment
+        env:
+          MINTLIFY_API_KEY: ${{ secrets.MINTLIFY_API_KEY }}
+          MINTLIFY_PROJECT_ID: ${{ vars.MINTLIFY_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINTLIFY_API_KEY:-}" ] || [ -z "${MINTLIFY_PROJECT_ID:-}" ]; then
+            echo "::error::Set repository secret MINTLIFY_API_KEY and variable MINTLIFY_PROJECT_ID."
+            echo "Copy both from https://app.mintlify.com/settings/organization/api-keys"
+            exit 1
+          fi
+          RESPONSE=$(curl -sS -w "\n%{http_code}" -X POST \
+            "https://api.mintlify.com/v1/project/update/${MINTLIFY_PROJECT_ID}" \
+            -H "Authorization: Bearer ${MINTLIFY_API_KEY}" \
+            -H "Content-Type: application/json")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          echo "$BODY"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Mintlify update failed with HTTP ${HTTP_CODE}"
+            exit 1
+          fi
