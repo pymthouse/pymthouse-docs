@@ -18,10 +18,10 @@ All RFC 8693 token exchange requests:
 | Parameter | Value |
 | --- | --- |
 | `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
-| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` (JWT) **or** `urn:pymthouse:oauth:token-type:api_key` (bare/composite API key) |
 | `subject_token` | A valid access token **or bare `pmth_*` API key** issued by this PymtHouse issuer |
 
-Authentication: **M2M HTTP Basic auth** (`Authorization: Basic base64(m2m_id:m2m_secret)`) is required for all token exchange calls.
+Authentication: **M2M HTTP Basic auth** (`Authorization: Basic base64(m2m_id:m2m_secret)`) is required for JWT subject-token exchange operations and optional for API-key subject-token exchange.
 
 Two endpoint forms are accepted:
 
@@ -130,7 +130,7 @@ curl -sS \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   --data-urlencode "subject_token=${API_KEY}" \
-  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  --data-urlencode "subject_token_type=urn:pymthouse:oauth:token-type:api_key" \
   "${ISSUER}/token"
 ```
 

@@ -93,8 +93,8 @@ Prepaid wallet management over M2M Basic. All wallet operations are scoped to th
 | `GET` | `…/wallet` | Balance, payment-method-on-file, Pay-Per-Use behavior, settlement order |
 | `POST` | `…/wallet/top-up` | Payment-mode Stripe Checkout for a **$1–$10,000** top-up |
 | `GET` | `…/wallet/invoices` | Past platform invoices (paginated) |
-| `GET` | `…/wallet/payment-methods` | Attached cards (brand + last4 only) |
-| `POST` | `…/wallet/payment-methods` | Setup-mode Stripe Checkout to attach the auto-debit card |
+| `GET` | `…/payment-methods` | Attached cards (brand + last4 only) |
+| `POST` | `…/payment-methods` | Setup-mode Stripe Checkout to attach the auto-debit card |
 
 ### Read the wallet
 
@@ -142,7 +142,7 @@ Returns a Stripe setup-mode Checkout URL. After the owner completes it, promote 
 curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X POST \
   -H "Content-Type: application/json" \
   -d '{"successUrl": "https://yourapp.com/billing/card-added"}' \
-  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/wallet/payment-methods"
+  "${BASE_URL}/api/v1/apps/${CLIENT_ID}/billing/payment-methods"
 
 # 2. After redirect, set the card as default
 curl -sS -u "${M2M_ID}:${M2M_SECRET}" -X PATCH \
@@ -287,11 +287,11 @@ Manage invoices and payment methods for individual end-users in your app.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `.../users/{externalUserId}/invoices` | Invoice list (`{ items, page, pageSize, totalCount }`) |
-| `GET` | `.../users/{externalUserId}/invoices/{invoiceId}/hosted-url` | Stripe hosted invoice URL and PDF link |
-| `GET` | `.../users/{externalUserId}/payment-methods` | List attached cards |
-| `POST` | `.../users/{externalUserId}/payment-methods` | Setup-mode Checkout (does not change plan) |
-| `POST` | `.../users/{externalUserId}/subscription/change` | Switch plan; paid targets may return a Connect `checkoutUrl` |
+| `GET` | `/api/v1/apps/{clientId}/users/{externalUserId}/invoices` | Invoice list (`{ items, page, pageSize, totalCount }`) |
+| `GET` | `/api/v1/apps/{clientId}/users/{externalUserId}/invoices/{invoiceId}/hosted-url` | Stripe hosted invoice URL and PDF link |
+| `GET` | `/api/v1/apps/{clientId}/users/{externalUserId}/payment-methods` | List attached cards |
+| `POST` | `/api/v1/apps/{clientId}/users/{externalUserId}/payment-methods` | Setup-mode Checkout (does not change plan) |
+| `POST` | `/api/v1/apps/{clientId}/users/{externalUserId}/subscription/change` | Switch plan; paid targets may return a Connect `checkoutUrl` |
 
 ```bash
 # List end-user invoices
